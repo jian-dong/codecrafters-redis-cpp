@@ -5,6 +5,8 @@
 #include <thread>
 #include <climits>
 #include <vector>
+#include <unordered_map>
+#include <mutex>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -14,6 +16,11 @@
 constexpr int kServerPort = 6379;
 constexpr int kServerBacklog = 5;
 constexpr char kPongResponse[] = "+PONG\r\n";
+constexpr char kOkResponse[] = "+OK\r\n";
+constexpr char kNullBulkResponse[] = "$-1\r\n";
+
+std::mutex gStoreMutex;
+std::unordered_map<std::string, std::string> gStore;
 
 bool parse_number(const std::string& data, size_t& index, int& value) {
   value = 0;
@@ -92,9 +99,17 @@ void send_pong(int client_fd) {
   send(client_fd, kPongResponse, sizeof(kPongResponse) - 1, 0);
 }
 
+void send_ok(int client_fd) {
+  send(client_fd, kOkResponse, sizeof(kOkResponse) - 1, 0);
+}
+
 void send_bulk_string(int client_fd, const std::string& value) {
   const std::string response = "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
   send(client_fd, response.data(), response.size(), 0);
+}
+
+void send_null_bulk(int client_fd) {
+  send(client_fd, kNullBulkResponse, sizeof(kNullBulkResponse) - 1, 0);
 }
 
 void handle_client(int client_fd) {
@@ -122,6 +137,28 @@ void handle_client(int client_fd) {
         }
         if (!args.empty() && args[0] == "ECHO" && args.size() >= 2) {
           send_bulk_string(client_fd, args[1]);
+          continue;
+        }
+        if (!args.empty() && args[0] == "SET" && args.size() >= 3) {
+          {
+            std::lock_guard<std::mutex> lock(gStoreMutex);
+            gStore[args[1]] = args[2];
+          }
+          send_ok(client_fd);
+          continue;
+        }
+        if (!args.empty() && args[0] == "GET" && args.size() >= 2) {
+          std::string value;
+          {
+            std::lock_guard<std::mutex> lock(gStoreMutex);
+            const auto found = gStore.find(args[1]);
+            if (found == gStore.end()) {
+              send_null_bulk(client_fd);
+              continue;
+            }
+            value = found->second;
+          }
+          send_bulk_string(client_fd, value);
           continue;
         }
         send_pong(client_fd);

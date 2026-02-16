@@ -36,6 +36,8 @@ bool parse_number(const std::string& data, size_t& index, int& value) {
   }
   index += 2;
   return true;
+}
+
 bool is_complete_resp_array(const std::string& data, size_t& index) {
   int array_size = 0;
   if (!parse_number(data, index, array_size) || array_size < 0) {
@@ -170,6 +172,4 @@ int main(int argc, char** argv) {
   close(server_fd);
 
   return 0;
-}
-
 }

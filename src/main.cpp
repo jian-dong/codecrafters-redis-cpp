@@ -10,8 +10,6 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
-namespace {
-
 constexpr int kServerPort = 6379;
 constexpr int kServerBacklog = 5;
 constexpr char kPongResponse[] = "+PONG\r\n";
@@ -38,8 +36,6 @@ bool parse_number(const std::string& data, size_t& index, int& value) {
   }
   index += 2;
   return true;
-}
-
 bool is_complete_resp_array(const std::string& data, size_t& index) {
   int array_size = 0;
   if (!parse_number(data, index, array_size) || array_size < 0) {

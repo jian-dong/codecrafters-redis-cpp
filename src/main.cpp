@@ -59,11 +59,81 @@ int main(int argc, char **argv) {
   }
   std::cout << "Client connected\n";
 
-  char buffer[1024];
-  recv(client_fd, buffer, sizeof(buffer), 0);
-
+  std::string request_buffer;
   const char *response = "+PONG\r\n";
-  send(client_fd, response, strlen(response), 0);
+
+  while (true) {
+    char buffer[1024];
+    ssize_t bytes_received = recv(client_fd, buffer, sizeof(buffer), 0);
+    if (bytes_received <= 0) {
+      break;
+    }
+
+    request_buffer.append(buffer, bytes_received);
+
+    while (!request_buffer.empty()) {
+      size_t i = 0;
+      if (request_buffer[0] == '*') {
+        auto parse_number = [](const std::string &data, size_t &index, int &value) -> bool {
+          size_t start = index;
+          while (index < data.size() && data[index] >= '0' && data[index] <= '9') {
+            index++;
+          }
+          if (start == index || index + 1 >= data.size() || data[index] != '\r' || data[index + 1] != '\n') {
+            return false;
+          }
+          value = std::stoi(data.substr(start, index - start));
+          index += 2;
+          return true;
+        };
+
+        i = 1;
+        int array_size = 0;
+        if (i >= request_buffer.size() || !parse_number(request_buffer, i, array_size)) {
+          break;
+        }
+
+        bool complete = true;
+        for (int arg = 0; arg < array_size; ++arg) {
+          if (i >= request_buffer.size() || request_buffer[i] != '$') {
+            complete = false;
+            break;
+          }
+          i++;
+          int bulk_len = 0;
+          if (!parse_number(request_buffer, i, bulk_len)) {
+            complete = false;
+            break;
+          }
+          if (i + static_cast<size_t>(bulk_len) + 2 > request_buffer.size()) {
+            complete = false;
+            break;
+          }
+          i += bulk_len;
+          if (i + 1 >= request_buffer.size() || request_buffer[i] != '\r' || request_buffer[i + 1] != '\n') {
+            complete = false;
+            break;
+          }
+          i += 2;
+        }
+
+        if (!complete) {
+          break;
+        }
+
+        request_buffer.erase(0, i);
+        send(client_fd, response, strlen(response), 0);
+        continue;
+      }
+
+      auto newline_pos = request_buffer.find('\n');
+      if (newline_pos == std::string::npos) {
+        break;
+      }
+      request_buffer.erase(0, newline_pos + 1);
+      send(client_fd, response, strlen(response), 0);
+    }
+  }
 
   close(client_fd);
   

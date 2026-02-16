@@ -4,6 +4,7 @@
 #include <cstring>
 #include <thread>
 #include <climits>
+#include <vector>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -38,33 +39,50 @@ bool parse_number(const std::string& data, size_t& index, int& value) {
   return true;
 }
 
-bool is_complete_resp_array(const std::string& data, size_t& index) {
+bool parse_bulk_string(const std::string& data, size_t& index, std::string& value) {
+  if (index >= data.size() || data[index] != '$') {
+    return false;
+  }
+
+  ++index;
+  int bulk_len = 0;
+  if (!parse_number(data, index, bulk_len) || bulk_len < 0) {
+    return false;
+  }
+
+  if (index + static_cast<size_t>(bulk_len) + 2 > data.size()) {
+    return false;
+  }
+
+  value.assign(data.data() + index, static_cast<size_t>(bulk_len));
+  index += static_cast<size_t>(bulk_len);
+  if (index + 1 >= data.size() || data[index] != '\r' || data[index + 1] != '\n') {
+    return false;
+  }
+
+  index += 2;
+  return true;
+}
+
+bool parse_resp_array(const std::string& data, size_t& index, std::vector<std::string>& args) {
+  if (index >= data.size() || data[index] != '*') {
+    return false;
+  }
+
+  ++index;
   int array_size = 0;
   if (!parse_number(data, index, array_size) || array_size < 0) {
     return false;
   }
 
+  args.clear();
+  args.reserve(array_size);
   for (int arg = 0; arg < array_size; ++arg) {
-    if (index >= data.size() || data[index] != '$') {
+    std::string value;
+    if (!parse_bulk_string(data, index, value)) {
       return false;
     }
-
-    ++index;
-    int bulk_len = 0;
-    if (!parse_number(data, index, bulk_len) || bulk_len < 0) {
-      return false;
-    }
-
-    if (index + static_cast<size_t>(bulk_len) + 2 > data.size()) {
-      return false;
-    }
-
-    index += static_cast<size_t>(bulk_len);
-    if (index + 1 >= data.size() || data[index] != '\r' || data[index + 1] != '\n') {
-      return false;
-    }
-
-    index += 2;
+    args.push_back(std::move(value));
   }
 
   return true;
@@ -72,6 +90,11 @@ bool is_complete_resp_array(const std::string& data, size_t& index) {
 
 void send_pong(int client_fd) {
   send(client_fd, kPongResponse, sizeof(kPongResponse) - 1, 0);
+}
+
+void send_bulk_string(int client_fd, const std::string& value) {
+  const std::string response = "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
+  send(client_fd, response.data(), response.size(), 0);
 }
 
 void handle_client(int client_fd) {
@@ -88,11 +111,19 @@ void handle_client(int client_fd) {
     while (!request_buffer.empty()) {
       size_t i = 0;
       if (request_buffer[0] == '*') {
-        i = 1;
-        if (i >= request_buffer.size() || !is_complete_resp_array(request_buffer, i)) {
+        std::vector<std::string> args;
+        if (!parse_resp_array(request_buffer, i, args)) {
           break;
         }
         request_buffer.erase(0, i);
+        if (!args.empty() && args[0] == "PING") {
+          send_pong(client_fd);
+          continue;
+        }
+        if (!args.empty() && args[0] == "ECHO" && args.size() >= 2) {
+          send_bulk_string(client_fd, args[1]);
+          continue;
+        }
         send_pong(client_fd);
         continue;
       }

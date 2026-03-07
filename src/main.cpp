@@ -339,6 +339,18 @@ void handle_client(int client_fd) {
           send_array(client_fd, result);
           continue;
         }
+        if (command == "LLEN" && args.size() >= 2) {
+          int64_t list_size = 0;
+          {
+            std::lock_guard<std::mutex> lock(gListStoreMutex);
+            const auto found = gListStore.find(args[1]);
+            if (found != gListStore.end()) {
+              list_size = static_cast<int64_t>(found->second.size());
+            }
+          }
+          send_integer(client_fd, list_size);
+          continue;
+        }
         send_pong(client_fd);
         continue;
       }

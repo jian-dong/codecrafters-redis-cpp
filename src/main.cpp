@@ -10,6 +10,7 @@
 #include <chrono>
 #include <optional>
 #include <cctype>
+#include <cstdint>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -29,6 +30,8 @@ struct StoredValue {
 
 std::mutex gStoreMutex;
 std::unordered_map<std::string, StoredValue> gStore;
+std::mutex gListStoreMutex;
+std::unordered_map<std::string, std::vector<std::string>> gListStore;
 
 bool parse_number(const std::string& data, size_t& index, int& value) {
   value = 0;
@@ -148,6 +151,11 @@ void send_null_bulk(int client_fd) {
   send(client_fd, kNullBulkResponse, sizeof(kNullBulkResponse) - 1, 0);
 }
 
+void send_integer(int client_fd, int64_t value) {
+  const std::string response = ":" + std::to_string(value) + "\r\n";
+  send(client_fd, response.data(), response.size(), 0);
+}
+
 void handle_client(int client_fd) {
   std::string request_buffer;
   while (true) {
@@ -217,6 +225,19 @@ void handle_client(int client_fd) {
             value = found->second.value;
           }
           send_bulk_string(client_fd, value);
+          continue;
+        }
+        if (command == "RPUSH" && args.size() >= 3) {
+          int64_t list_size = 0;
+          {
+            std::lock_guard<std::mutex> lock(gListStoreMutex);
+            std::vector<std::string>& list = gListStore[args[1]];
+            for (size_t arg_index = 2; arg_index < args.size(); ++arg_index) {
+              list.push_back(args[arg_index]);
+            }
+            list_size = static_cast<int64_t>(list.size());
+          }
+          send_integer(client_fd, list_size);
           continue;
         }
         send_pong(client_fd);

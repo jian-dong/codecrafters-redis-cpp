@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cstdlib>
+#include <cerrno>
 #include <string>
 #include <cstring>
 #include <algorithm>
@@ -140,6 +141,23 @@ bool parse_signed_integer(const std::string& data, int64_t& value) {
   if (negative) {
     value = -value;
   }
+  return true;
+}
+
+bool parse_timeout_duration(const std::string& data, std::chrono::steady_clock::duration& timeout) {
+  if (data.empty()) {
+    return false;
+  }
+
+  errno = 0;
+  char* end = nullptr;
+  const double seconds = std::strtod(data.c_str(), &end);
+  if (end != data.c_str() + data.size() || errno == ERANGE || seconds < 0.0) {
+    return false;
+  }
+
+  timeout = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(seconds));
   return true;
 }
 
@@ -408,8 +426,8 @@ void handle_client(int client_fd) {
           continue;
         }
         if (command == "BLPOP" && args.size() >= 3) {
-          int64_t timeout_seconds = 0;
-          if (!parse_signed_integer(args[2], timeout_seconds) || timeout_seconds < 0) {
+          std::chrono::steady_clock::duration timeout{};
+          if (!parse_timeout_duration(args[2], timeout)) {
             send_null_array(client_fd);
             continue;
           }
@@ -423,9 +441,9 @@ void handle_client(int client_fd) {
               return found != gListStore.end() && !found->second.empty();
             };
 
-            if (timeout_seconds == 0) {
+            if (timeout == std::chrono::steady_clock::duration::zero()) {
               gListStoreCv.wait(lock, has_value);
-            } else if (!gListStoreCv.wait_for(lock, std::chrono::seconds(timeout_seconds), has_value)) {
+            } else if (!gListStoreCv.wait_for(lock, timeout, has_value)) {
               send_null_array(client_fd);
               continue;
             }

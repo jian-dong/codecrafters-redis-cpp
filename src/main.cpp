@@ -351,6 +351,26 @@ void handle_client(int client_fd) {
           send_integer(client_fd, list_size);
           continue;
         }
+        if (command == "LPOP" && args.size() >= 2) {
+          std::string value;
+          bool found_value = false;
+          {
+            std::lock_guard<std::mutex> lock(gListStoreMutex);
+            const auto found = gListStore.find(args[1]);
+            if (found != gListStore.end() && !found->second.empty()) {
+              value = found->second.front();
+              found->second.erase(found->second.begin());
+              found_value = true;
+            }
+          }
+
+          if (found_value) {
+            send_bulk_string(client_fd, value);
+          } else {
+            send_null_bulk(client_fd);
+          }
+          continue;
+        }
         send_pong(client_fd);
         continue;
       }

@@ -7,6 +7,9 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <chrono>
+#include <optional>
+#include <cctype>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -19,8 +22,13 @@ constexpr char kPongResponse[] = "+PONG\r\n";
 constexpr char kOkResponse[] = "+OK\r\n";
 constexpr char kNullBulkResponse[] = "$-1\r\n";
 
+struct StoredValue {
+  std::string value;
+  std::optional<std::chrono::steady_clock::time_point> expires_at;
+};
+
 std::mutex gStoreMutex;
-std::unordered_map<std::string, std::string> gStore;
+std::unordered_map<std::string, StoredValue> gStore;
 
 bool parse_number(const std::string& data, size_t& index, int& value) {
   value = 0;
@@ -71,6 +79,27 @@ bool parse_bulk_string(const std::string& data, size_t& index, std::string& valu
   return true;
 }
 
+bool parse_milliseconds(const std::string& data, int64_t& value) {
+  if (data.empty()) {
+    return false;
+  }
+
+  value = 0;
+  for (const char ch : data) {
+    if (ch < '0' || ch > '9') {
+      return false;
+    }
+
+    const int digit = ch - '0';
+    if (value > (LLONG_MAX - digit) / 10) {
+      return false;
+    }
+    value = value * 10 + digit;
+  }
+
+  return true;
+}
+
 bool parse_resp_array(const std::string& data, size_t& index, std::vector<std::string>& args) {
   if (index >= data.size() || data[index] != '*') {
     return false;
@@ -93,6 +122,13 @@ bool parse_resp_array(const std::string& data, size_t& index, std::vector<std::s
   }
 
   return true;
+}
+
+std::string to_upper_ascii(std::string value) {
+  for (char& ch : value) {
+    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  }
+  return value;
 }
 
 void send_pong(int client_fd) {
@@ -131,23 +167,37 @@ void handle_client(int client_fd) {
           break;
         }
         request_buffer.erase(0, i);
-        if (!args.empty() && args[0] == "PING") {
+        if (args.empty()) {
           send_pong(client_fd);
           continue;
         }
-        if (!args.empty() && args[0] == "ECHO" && args.size() >= 2) {
+
+        const std::string command = to_upper_ascii(args[0]);
+        if (command == "PING") {
+          send_pong(client_fd);
+          continue;
+        }
+        if (command == "ECHO" && args.size() >= 2) {
           send_bulk_string(client_fd, args[1]);
           continue;
         }
-        if (!args.empty() && args[0] == "SET" && args.size() >= 3) {
+        if (command == "SET" && args.size() >= 3) {
+          StoredValue entry{args[2], std::nullopt};
+          if (args.size() >= 5 && to_upper_ascii(args[3]) == "PX") {
+            int64_t ttl_milliseconds = 0;
+            if (parse_milliseconds(args[4], ttl_milliseconds)) {
+              entry.expires_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(ttl_milliseconds);
+            }
+          }
+
           {
             std::lock_guard<std::mutex> lock(gStoreMutex);
-            gStore[args[1]] = args[2];
+            gStore[args[1]] = std::move(entry);
           }
           send_ok(client_fd);
           continue;
         }
-        if (!args.empty() && args[0] == "GET" && args.size() >= 2) {
+        if (command == "GET" && args.size() >= 2) {
           std::string value;
           {
             std::lock_guard<std::mutex> lock(gStoreMutex);
@@ -156,7 +206,15 @@ void handle_client(int client_fd) {
               send_null_bulk(client_fd);
               continue;
             }
-            value = found->second;
+
+            const auto now = std::chrono::steady_clock::now();
+            if (found->second.expires_at.has_value() && now >= *found->second.expires_at) {
+              gStore.erase(found);
+              send_null_bulk(client_fd);
+              continue;
+            }
+
+            value = found->second.value;
           }
           send_bulk_string(client_fd, value);
           continue;

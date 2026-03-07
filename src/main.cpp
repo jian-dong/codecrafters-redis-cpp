@@ -103,6 +103,42 @@ bool parse_milliseconds(const std::string& data, int64_t& value) {
   return true;
 }
 
+bool parse_signed_integer(const std::string& data, int64_t& value) {
+  if (data.empty()) {
+    return false;
+  }
+
+  bool negative = false;
+  size_t index = 0;
+  if (data[0] == '-') {
+    negative = true;
+    index = 1;
+  }
+
+  if (index == data.size()) {
+    return false;
+  }
+
+  value = 0;
+  for (; index < data.size(); ++index) {
+    const char ch = data[index];
+    if (ch < '0' || ch > '9') {
+      return false;
+    }
+
+    const int digit = ch - '0';
+    if (value > (LLONG_MAX - digit) / 10) {
+      return false;
+    }
+    value = value * 10 + digit;
+  }
+
+  if (negative) {
+    value = -value;
+  }
+  return true;
+}
+
 bool parse_resp_array(const std::string& data, size_t& index, std::vector<std::string>& args) {
   if (index >= data.size() || data[index] != '*') {
     return false;
@@ -153,6 +189,14 @@ void send_null_bulk(int client_fd) {
 
 void send_integer(int client_fd, int64_t value) {
   const std::string response = ":" + std::to_string(value) + "\r\n";
+  send(client_fd, response.data(), response.size(), 0);
+}
+
+void send_array(int client_fd, const std::vector<std::string>& values) {
+  std::string response = "*" + std::to_string(values.size()) + "\r\n";
+  for (const std::string& value : values) {
+    response += "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
+  }
   send(client_fd, response.data(), response.size(), 0);
 }
 
@@ -238,6 +282,48 @@ void handle_client(int client_fd) {
             list_size = static_cast<int64_t>(list.size());
           }
           send_integer(client_fd, list_size);
+          continue;
+        }
+        if (command == "LRANGE" && args.size() >= 4) {
+          int64_t start = 0;
+          int64_t stop = 0;
+          if (!parse_signed_integer(args[2], start) || !parse_signed_integer(args[3], stop)) {
+            send_array(client_fd, {});
+            continue;
+          }
+
+          std::vector<std::string> result;
+          {
+            std::lock_guard<std::mutex> lock(gListStoreMutex);
+            const auto found = gListStore.find(args[1]);
+            if (found != gListStore.end()) {
+              const std::vector<std::string>& list = found->second;
+              const int64_t list_size = static_cast<int64_t>(list.size());
+
+              if (start < 0) {
+                start += list_size;
+              }
+              if (stop < 0) {
+                stop += list_size;
+              }
+
+              if (start < 0) {
+                start = 0;
+              }
+              if (stop >= list_size) {
+                stop = list_size - 1;
+              }
+
+              if (start < list_size && stop >= 0 && start <= stop) {
+                result.reserve(static_cast<size_t>(stop - start + 1));
+                for (int64_t index = start; index <= stop; ++index) {
+                  result.push_back(list[static_cast<size_t>(index)]);
+                }
+              }
+            }
+          }
+
+          send_array(client_fd, result);
           continue;
         }
         send_pong(client_fd);

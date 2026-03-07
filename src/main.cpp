@@ -284,6 +284,19 @@ void handle_client(int client_fd) {
           send_integer(client_fd, list_size);
           continue;
         }
+        if (command == "LPUSH" && args.size() >= 3) {
+          int64_t list_size = 0;
+          {
+            std::lock_guard<std::mutex> lock(gListStoreMutex);
+            std::vector<std::string>& list = gListStore[args[1]];
+            for (size_t arg_index = 2; arg_index < args.size(); ++arg_index) {
+              list.insert(list.begin(), args[arg_index]);
+            }
+            list_size = static_cast<int64_t>(list.size());
+          }
+          send_integer(client_fd, list_size);
+          continue;
+        }
         if (command == "LRANGE" && args.size() >= 4) {
           int64_t start = 0;
           int64_t stop = 0;

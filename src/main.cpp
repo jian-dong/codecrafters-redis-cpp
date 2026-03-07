@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <string>
 #include <cstring>
+#include <algorithm>
 #include <thread>
 #include <climits>
 #include <vector>
@@ -352,6 +353,32 @@ void handle_client(int client_fd) {
           continue;
         }
         if (command == "LPOP" && args.size() >= 2) {
+          if (args.size() >= 3) {
+            int64_t count = 0;
+            if (!parse_signed_integer(args[2], count) || count <= 0) {
+              send_array(client_fd, {});
+              continue;
+            }
+
+            std::vector<std::string> popped_values;
+            {
+              std::lock_guard<std::mutex> lock(gListStoreMutex);
+              const auto found = gListStore.find(args[1]);
+              if (found != gListStore.end() && !found->second.empty()) {
+                std::vector<std::string>& list = found->second;
+                const size_t values_to_pop = std::min(static_cast<size_t>(count), list.size());
+                popped_values.reserve(values_to_pop);
+                for (size_t index = 0; index < values_to_pop; ++index) {
+                  popped_values.push_back(list[index]);
+                }
+                list.erase(list.begin(), list.begin() + static_cast<std::ptrdiff_t>(values_to_pop));
+              }
+            }
+
+            send_array(client_fd, popped_values);
+            continue;
+          }
+
           std::string value;
           bool found_value = false;
           {

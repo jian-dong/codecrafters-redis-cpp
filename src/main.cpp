@@ -8,6 +8,7 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <condition_variable>
 #include <chrono>
 #include <optional>
 #include <cctype>
@@ -23,6 +24,7 @@ constexpr int kServerBacklog = 5;
 constexpr char kPongResponse[] = "+PONG\r\n";
 constexpr char kOkResponse[] = "+OK\r\n";
 constexpr char kNullBulkResponse[] = "$-1\r\n";
+constexpr char kNullArrayResponse[] = "*-1\r\n";
 
 struct StoredValue {
   std::string value;
@@ -32,6 +34,7 @@ struct StoredValue {
 std::mutex gStoreMutex;
 std::unordered_map<std::string, StoredValue> gStore;
 std::mutex gListStoreMutex;
+std::condition_variable gListStoreCv;
 std::unordered_map<std::string, std::vector<std::string>> gListStore;
 
 bool parse_number(const std::string& data, size_t& index, int& value) {
@@ -188,6 +191,10 @@ void send_null_bulk(int client_fd) {
   send(client_fd, kNullBulkResponse, sizeof(kNullBulkResponse) - 1, 0);
 }
 
+void send_null_array(int client_fd) {
+  send(client_fd, kNullArrayResponse, sizeof(kNullArrayResponse) - 1, 0);
+}
+
 void send_integer(int client_fd, int64_t value) {
   const std::string response = ":" + std::to_string(value) + "\r\n";
   send(client_fd, response.data(), response.size(), 0);
@@ -282,6 +289,7 @@ void handle_client(int client_fd) {
             }
             list_size = static_cast<int64_t>(list.size());
           }
+          gListStoreCv.notify_all();
           send_integer(client_fd, list_size);
           continue;
         }
@@ -295,6 +303,7 @@ void handle_client(int client_fd) {
             }
             list_size = static_cast<int64_t>(list.size());
           }
+          gListStoreCv.notify_all();
           send_integer(client_fd, list_size);
           continue;
         }
@@ -395,6 +404,42 @@ void handle_client(int client_fd) {
             send_bulk_string(client_fd, value);
           } else {
             send_null_bulk(client_fd);
+          }
+          continue;
+        }
+        if (command == "BLPOP" && args.size() >= 3) {
+          int64_t timeout_seconds = 0;
+          if (!parse_signed_integer(args[2], timeout_seconds) || timeout_seconds < 0) {
+            send_null_array(client_fd);
+            continue;
+          }
+
+          std::string value;
+          bool found_value = false;
+          {
+            std::unique_lock<std::mutex> lock(gListStoreMutex);
+            auto has_value = [&]() {
+              const auto found = gListStore.find(args[1]);
+              return found != gListStore.end() && !found->second.empty();
+            };
+
+            if (timeout_seconds == 0) {
+              gListStoreCv.wait(lock, has_value);
+            } else if (!gListStoreCv.wait_for(lock, std::chrono::seconds(timeout_seconds), has_value)) {
+              send_null_array(client_fd);
+              continue;
+            }
+
+            std::vector<std::string>& list = gListStore[args[1]];
+            value = list.front();
+            list.erase(list.begin());
+            found_value = true;
+          }
+
+          if (found_value) {
+            send_array(client_fd, {args[1], value});
+          } else {
+            send_null_array(client_fd);
           }
           continue;
         }

@@ -1,0 +1,301 @@
+#include "redis-cpp/database.hpp"
+
+#include <algorithm>
+
+namespace redis {
+
+std::string ValueTypeName(ValueType type) {
+  switch (type) {
+    case ValueType::kString:
+      return "string";
+    case ValueType::kList:
+      return "list";
+    case ValueType::kNone:
+    default:
+      return "none";
+  }
+}
+
+void Database::SetString(const std::string& key, std::string value,
+                         std::optional<std::chrono::milliseconds> ttl) {
+  Entry entry{
+      .value = StringValue{.value = std::move(value)},
+      .expires_at = std::nullopt,
+  };
+  if (ttl.has_value()) {
+    entry.expires_at = std::chrono::steady_clock::now() + *ttl;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  store_[key] = std::move(entry);
+}
+
+Database::StringLookup Database::GetString(const std::string& key) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<StringValue>(entry->value)) {
+    return {.type = ValueType::kList, .value = std::nullopt};
+  }
+
+  return {
+      .type = ValueType::kString,
+      .value = std::get<StringValue>(entry->value).value,
+  };
+}
+
+ValueType Database::TypeOf(const std::string& key) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return ValueType::kNone;
+  }
+
+  if (std::holds_alternative<StringValue>(entry->value)) {
+    return ValueType::kString;
+  }
+
+  return ValueType::kList;
+}
+
+Database::ListMutationResult Database::PushRight(
+    const std::string& key, const std::vector<std::string>& values) {
+  int64_t size = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Entry* entry = FindLiveEntryLocked(key);
+    if (entry == nullptr) {
+      auto [it, _] = store_.emplace(key, Entry{
+                                             .value = ListValue{},
+                                             .expires_at = std::nullopt,
+                                         });
+      entry = &it->second;
+    }
+
+    if (!std::holds_alternative<ListValue>(entry->value)) {
+      return {.wrong_type = true};
+    }
+
+    entry->expires_at.reset();
+    std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
+    list.insert(list.end(), values.begin(), values.end());
+    size = static_cast<int64_t>(list.size());
+  }
+
+  list_change_cv_.notify_all();
+  return {.size = size};
+}
+
+Database::ListMutationResult Database::PushLeft(
+    const std::string& key, const std::vector<std::string>& values) {
+  int64_t size = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Entry* entry = FindLiveEntryLocked(key);
+    if (entry == nullptr) {
+      auto [it, _] = store_.emplace(key, Entry{
+                                             .value = ListValue{},
+                                             .expires_at = std::nullopt,
+                                         });
+      entry = &it->second;
+    }
+
+    if (!std::holds_alternative<ListValue>(entry->value)) {
+      return {.wrong_type = true};
+    }
+
+    entry->expires_at.reset();
+    std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
+    for (const std::string& value : values) {
+      list.insert(list.begin(), value);
+    }
+    size = static_cast<int64_t>(list.size());
+  }
+
+  list_change_cv_.notify_all();
+  return {.size = size};
+}
+
+Database::ListRangeResult Database::Range(const std::string& key, int64_t start,
+                                          int64_t stop) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<ListValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  const std::vector<std::string>& list =
+      std::get<ListValue>(entry->value).values;
+  const int64_t list_size = static_cast<int64_t>(list.size());
+
+  if (start < 0) {
+    start += list_size;
+  }
+  if (stop < 0) {
+    stop += list_size;
+  }
+  if (start < 0) {
+    start = 0;
+  }
+  if (stop >= list_size) {
+    stop = list_size - 1;
+  }
+
+  std::vector<std::string> values;
+  if (start < list_size && stop >= 0 && start <= stop) {
+    values.reserve(static_cast<size_t>(stop - start + 1));
+    for (int64_t index = start; index <= stop; ++index) {
+      values.push_back(list[static_cast<size_t>(index)]);
+    }
+  }
+
+  return {.values = std::move(values)};
+}
+
+Database::ListLengthResult Database::Length(const std::string& key) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<ListValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  return {
+      .length =
+          static_cast<int64_t>(std::get<ListValue>(entry->value).values.size()),
+  };
+}
+
+Database::ListPopResult Database::PopLeft(const std::string& key) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<ListValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
+  if (list.empty()) {
+    return {};
+  }
+
+  std::string value = list.front();
+  list.erase(list.begin());
+  return {
+      .found = true,
+      .value = std::move(value),
+  };
+}
+
+Database::ListPopManyResult Database::PopLeft(const std::string& key,
+                                              size_t count) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<ListValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
+  const size_t pop_count = std::min(count, list.size());
+
+  std::vector<std::string> values;
+  values.reserve(pop_count);
+  for (size_t i = 0; i < pop_count; ++i) {
+    values.push_back(list[i]);
+  }
+  list.erase(list.begin(),
+             list.begin() + static_cast<std::ptrdiff_t>(pop_count));
+
+  return {.values = std::move(values)};
+}
+
+Database::BlockingPopResult Database::BlockingPopLeft(
+    const std::string& key, std::chrono::steady_clock::duration timeout) {
+  std::unique_lock<std::mutex> lock(mutex_);
+
+  auto list_ready = [&]() {
+    Entry* entry = FindLiveEntryLocked(key);
+    if (entry == nullptr) {
+      return false;
+    }
+
+    if (!std::holds_alternative<ListValue>(entry->value)) {
+      return true;
+    }
+
+    return !std::get<ListValue>(entry->value).values.empty();
+  };
+
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry != nullptr && !std::holds_alternative<ListValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  if (timeout == std::chrono::steady_clock::duration::zero()) {
+    list_change_cv_.wait(lock, list_ready);
+  } else if (!list_change_cv_.wait_for(lock, timeout, list_ready)) {
+    return {};
+  }
+
+  entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<ListValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
+  if (list.empty()) {
+    return {};
+  }
+
+  std::string value = list.front();
+  list.erase(list.begin());
+
+  return {
+      .found = true,
+      .key = key,
+      .value = std::move(value),
+  };
+}
+
+Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
+  const auto found = store_.find(key);
+  if (found == store_.end()) {
+    return nullptr;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (IsExpired(found->second, now)) {
+    store_.erase(found);
+    return nullptr;
+  }
+
+  return &found->second;
+}
+
+bool Database::IsExpired(const Entry& entry,
+                         std::chrono::steady_clock::time_point now) {
+  return entry.expires_at.has_value() && now >= *entry.expires_at;
+}
+
+}  // namespace redis

@@ -1,0 +1,289 @@
+#include "redis-cpp/command_processor.hpp"
+
+#include <chrono>
+#include <optional>
+
+#include "redis-cpp/resp.hpp"
+
+namespace redis {
+
+CommandProcessor::CommandProcessor(Database& database) : database_(database) {}
+
+std::string CommandErrorMessage(const CommandError& error) {
+  switch (error.code) {
+    case CommandErrorCode::kUnknownCommand:
+      return "ERR unknown command '" + error.command + "'";
+    case CommandErrorCode::kWrongArity:
+      return "ERR wrong number of arguments for '" + error.command +
+             "' command";
+    case CommandErrorCode::kWrongType:
+      return "WRONGTYPE Operation against a key holding the wrong kind of "
+             "value";
+    case CommandErrorCode::kSyntaxError:
+      return "ERR syntax error";
+    case CommandErrorCode::kInvalidInteger:
+      return "ERR value is not an integer or out of range";
+  }
+
+  return "ERR command failed";
+}
+
+CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    return RespSimpleString{"PONG"};
+  }
+
+  const std::string command = ToUpperAscii(args[0]);
+  if (command == "PING") {
+    return HandlePing(args);
+  }
+  if (command == "ECHO") {
+    return HandleEcho(args);
+  }
+  if (command == "SET") {
+    return HandleSet(args);
+  }
+  if (command == "GET") {
+    return HandleGet(args);
+  }
+  if (command == "TYPE") {
+    return HandleType(args);
+  }
+  if (command == "RPUSH") {
+    return HandleRpush(args);
+  }
+  if (command == "LPUSH") {
+    return HandleLpush(args);
+  }
+  if (command == "LRANGE") {
+    return HandleLrange(args);
+  }
+  if (command == "LLEN") {
+    return HandleLlen(args);
+  }
+  if (command == "LPOP") {
+    return HandleLpop(args);
+  }
+  if (command == "BLPOP") {
+    return HandleBlpop(args);
+  }
+
+  return tl::make_unexpected(CommandError{
+      .code = CommandErrorCode::kUnknownCommand, .command = args[0]});
+}
+
+CommandResult CommandProcessor::HandlePing(
+    const std::vector<std::string>& args) {
+  if (args.size() >= 2) {
+    return RespBulkString{args[1]};
+  }
+
+  return RespSimpleString{"PONG"};
+}
+
+CommandResult CommandProcessor::HandleEcho(
+    const std::vector<std::string>& args) {
+  if (args.size() < 2) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "echo"});
+  }
+
+  return RespBulkString{args[1]};
+}
+
+CommandResult CommandProcessor::HandleSet(
+    const std::vector<std::string>& args) {
+  if (args.size() < 3) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "set"});
+  }
+
+  std::optional<std::chrono::milliseconds> ttl;
+  if (args.size() == 5) {
+    if (ToUpperAscii(args[3]) != "PX") {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kSyntaxError, .command = "set"});
+    }
+
+    int64_t ttl_milliseconds = 0;
+    if (!ParseMilliseconds(args[4], ttl_milliseconds)) {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kInvalidInteger, .command = "set"});
+    }
+
+    ttl = std::chrono::milliseconds(ttl_milliseconds);
+  } else if (args.size() != 3) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kSyntaxError, .command = "set"});
+  }
+
+  database_.SetString(args[1], args[2], ttl);
+  return RespSimpleString{"OK"};
+}
+
+CommandResult CommandProcessor::HandleGet(
+    const std::vector<std::string>& args) {
+  if (args.size() < 2) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "get"});
+  }
+
+  const Database::StringLookup result = database_.GetString(args[1]);
+  if (result.type == ValueType::kNone) {
+    return RespNullBulk{};
+  }
+  if (result.type != ValueType::kString) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "get"});
+  }
+
+  return RespBulkString{*result.value};
+}
+
+CommandResult CommandProcessor::HandleType(
+    const std::vector<std::string>& args) {
+  if (args.size() < 2) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "type"});
+  }
+
+  return RespSimpleString{ValueTypeName(database_.TypeOf(args[1]))};
+}
+
+CommandResult CommandProcessor::HandleRpush(
+    const std::vector<std::string>& args) {
+  if (args.size() < 3) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "rpush"});
+  }
+
+  const std::vector<std::string> values(args.begin() + 2, args.end());
+  const Database::ListMutationResult result =
+      database_.PushRight(args[1], values);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "rpush"});
+  }
+
+  return RespInteger{result.size};
+}
+
+CommandResult CommandProcessor::HandleLpush(
+    const std::vector<std::string>& args) {
+  if (args.size() < 3) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "lpush"});
+  }
+
+  const std::vector<std::string> values(args.begin() + 2, args.end());
+  const Database::ListMutationResult result =
+      database_.PushLeft(args[1], values);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "lpush"});
+  }
+
+  return RespInteger{result.size};
+}
+
+CommandResult CommandProcessor::HandleLrange(
+    const std::vector<std::string>& args) {
+  if (args.size() < 4) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "lrange"});
+  }
+
+  int64_t start = 0;
+  int64_t stop = 0;
+  if (!ParseSignedInteger(args[2], start) ||
+      !ParseSignedInteger(args[3], stop)) {
+    return RespArray{};
+  }
+
+  const Database::ListRangeResult result =
+      database_.Range(args[1], start, stop);
+  if (result.wrong_type) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongType, .command = "lrange"});
+  }
+
+  return RespArray{result.values};
+}
+
+CommandResult CommandProcessor::HandleLlen(
+    const std::vector<std::string>& args) {
+  if (args.size() < 2) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "llen"});
+  }
+
+  const Database::ListLengthResult result = database_.Length(args[1]);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "llen"});
+  }
+
+  return RespInteger{result.length};
+}
+
+CommandResult CommandProcessor::HandleLpop(
+    const std::vector<std::string>& args) {
+  if (args.size() < 2) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "lpop"});
+  }
+
+  if (args.size() >= 3) {
+    int64_t count = 0;
+    if (!ParseSignedInteger(args[2], count) || count <= 0) {
+      return RespArray{};
+    }
+
+    const Database::ListPopManyResult result =
+        database_.PopLeft(args[1], static_cast<size_t>(count));
+    if (result.wrong_type) {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kWrongType, .command = "lpop"});
+    }
+
+    return RespArray{result.values};
+  }
+
+  const Database::ListPopResult result = database_.PopLeft(args[1]);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "lpop"});
+  }
+  if (!result.found) {
+    return RespNullBulk{};
+  }
+
+  return RespBulkString{result.value};
+}
+
+CommandResult CommandProcessor::HandleBlpop(
+    const std::vector<std::string>& args) {
+  if (args.size() < 3) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "blpop"});
+  }
+
+  std::chrono::steady_clock::duration timeout{};
+  if (!ParseTimeoutDuration(args[2], timeout)) {
+    return RespNullArray{};
+  }
+
+  const Database::BlockingPopResult result =
+      database_.BlockingPopLeft(args[1], timeout);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "blpop"});
+  }
+  if (!result.found) {
+    return RespNullArray{};
+  }
+
+  return RespArray{{result.key, result.value}};
+}
+
+}  // namespace redis

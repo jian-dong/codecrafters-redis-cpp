@@ -192,6 +192,11 @@ std::string to_upper_ascii(std::string value) {
   return value;
 }
 
+void send_simple_string(int client_fd, const std::string& value) {
+  const std::string response = "+" + value + "\r\n";
+  send(client_fd, response.data(), response.size(), 0);
+}
+
 void send_pong(int client_fd) {
   send(client_fd, kPongResponse, sizeof(kPongResponse) - 1, 0);
 }
@@ -224,6 +229,30 @@ void send_array(int client_fd, const std::vector<std::string>& values) {
     response += "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
   }
   send(client_fd, response.data(), response.size(), 0);
+}
+
+bool try_get_string_value(const std::string& key, std::string* value = nullptr) {
+  std::lock_guard<std::mutex> lock(gStoreMutex);
+  const auto found = gStore.find(key);
+  if (found == gStore.end()) {
+    return false;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (found->second.expires_at.has_value() && now >= *found->second.expires_at) {
+    gStore.erase(found);
+    return false;
+  }
+
+  if (value != nullptr) {
+    *value = found->second.value;
+  }
+  return true;
+}
+
+bool has_list_value(const std::string& key) {
+  std::lock_guard<std::mutex> lock(gListStoreMutex);
+  return gListStore.find(key) != gListStore.end();
 }
 
 void handle_client(int client_fd) {
@@ -277,24 +306,26 @@ void handle_client(int client_fd) {
         }
         if (command == "GET" && args.size() >= 2) {
           std::string value;
-          {
-            std::lock_guard<std::mutex> lock(gStoreMutex);
-            const auto found = gStore.find(args[1]);
-            if (found == gStore.end()) {
-              send_null_bulk(client_fd);
-              continue;
-            }
-
-            const auto now = std::chrono::steady_clock::now();
-            if (found->second.expires_at.has_value() && now >= *found->second.expires_at) {
-              gStore.erase(found);
-              send_null_bulk(client_fd);
-              continue;
-            }
-
-            value = found->second.value;
+          if (!try_get_string_value(args[1], &value)) {
+            send_null_bulk(client_fd);
+            continue;
           }
+
           send_bulk_string(client_fd, value);
+          continue;
+        }
+        if (command == "TYPE" && args.size() >= 2) {
+          if (try_get_string_value(args[1])) {
+            send_simple_string(client_fd, "string");
+            continue;
+          }
+
+          if (has_list_value(args[1])) {
+            send_simple_string(client_fd, "list");
+            continue;
+          }
+
+          send_simple_string(client_fd, "none");
           continue;
         }
         if (command == "RPUSH" && args.size() >= 3) {

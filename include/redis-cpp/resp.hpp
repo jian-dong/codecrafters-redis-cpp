@@ -1,5 +1,4 @@
-#ifndef REDIS_CPP_RESP_HPP_
-#define REDIS_CPP_RESP_HPP_
+#pragma once
 
 #include <chrono>
 #include <cstdint>
@@ -59,4 +58,3 @@ bool ParseTimeoutDuration(std::string_view data,
 
 }  // namespace redis
 
-#endif  // REDIS_CPP_RESP_HPP_

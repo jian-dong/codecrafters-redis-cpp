@@ -1,5 +1,4 @@
-#ifndef REDIS_CPP_REDIS_SERVER_HPP_
-#define REDIS_CPP_REDIS_SERVER_HPP_
+#pragma once
 
 #include "redis-cpp/command_processor.hpp"
 #include "redis-cpp/database.hpp"
@@ -25,4 +24,3 @@ class RedisServer {
 
 }  // namespace redis
 
-#endif  // REDIS_CPP_REDIS_SERVER_HPP_

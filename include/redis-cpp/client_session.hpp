@@ -1,5 +1,4 @@
-#ifndef REDIS_CPP_CLIENT_SESSION_HPP_
-#define REDIS_CPP_CLIENT_SESSION_HPP_
+#pragma once
 
 #include "redis-cpp/command_processor.hpp"
 #include "redis-cpp/resp.hpp"
@@ -21,4 +20,3 @@ class ClientSession {
 
 }  // namespace redis
 
-#endif  // REDIS_CPP_CLIENT_SESSION_HPP_

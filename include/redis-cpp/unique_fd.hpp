@@ -1,5 +1,4 @@
-#ifndef REDIS_CPP_UNIQUE_FD_HPP_
-#define REDIS_CPP_UNIQUE_FD_HPP_
+#pragma once
 
 #include <unistd.h>
 
@@ -46,4 +45,3 @@ class UniqueFd {
 
 }  // namespace redis
 
-#endif  // REDIS_CPP_UNIQUE_FD_HPP_

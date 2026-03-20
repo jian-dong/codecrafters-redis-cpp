@@ -1,5 +1,4 @@
-#ifndef REDIS_CPP_APPLICATION_HPP_
-#define REDIS_CPP_APPLICATION_HPP_
+#pragma once
 
 #include "redis-cpp/config_parser.hpp"
 #include "redis-cpp/result.hpp"
@@ -18,4 +17,3 @@ class Application {
 
 }  // namespace redis
 
-#endif  // REDIS_CPP_APPLICATION_HPP_

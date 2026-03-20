@@ -1,5 +1,4 @@
-#ifndef REDIS_CPP_SOCKET_HPP_
-#define REDIS_CPP_SOCKET_HPP_
+#pragma once
 
 #include <sys/types.h>
 
@@ -53,4 +52,3 @@ class TcpListener {
 
 }  // namespace redis
 
-#endif  // REDIS_CPP_SOCKET_HPP_

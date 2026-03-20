@@ -1,5 +1,4 @@
-#ifndef REDIS_CPP_SERVER_CONFIG_HPP_
-#define REDIS_CPP_SERVER_CONFIG_HPP_
+#pragma once
 
 namespace redis {
 
@@ -10,4 +9,3 @@ struct ServerConfig {
 
 }  // namespace redis
 
-#endif  // REDIS_CPP_SERVER_CONFIG_HPP_

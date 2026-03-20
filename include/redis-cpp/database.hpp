@@ -1,5 +1,4 @@
-#ifndef REDIS_CPP_DATABASE_HPP_
-#define REDIS_CPP_DATABASE_HPP_
+#pragma once
 
 #include <chrono>
 #include <condition_variable>
@@ -123,4 +122,3 @@ class Database {
 
 }  // namespace redis
 
-#endif  // REDIS_CPP_DATABASE_HPP_

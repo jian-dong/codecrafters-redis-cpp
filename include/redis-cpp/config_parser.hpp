@@ -1,5 +1,4 @@
-#ifndef REDIS_CPP_CONFIG_PARSER_HPP_
-#define REDIS_CPP_CONFIG_PARSER_HPP_
+#pragma once
 
 #include "redis-cpp/result.hpp"
 #include "redis-cpp/server_config.hpp"
@@ -13,4 +12,3 @@ class ConfigParser {
 
 }  // namespace redis
 
-#endif  // REDIS_CPP_CONFIG_PARSER_HPP_

@@ -1,5 +1,4 @@
-#ifndef REDIS_CPP_COMMAND_PROCESSOR_HPP_
-#define REDIS_CPP_COMMAND_PROCESSOR_HPP_
+#pragma once
 
 #include <string>
 #include <vector>
@@ -52,4 +51,3 @@ class CommandProcessor {
 
 }  // namespace redis
 
-#endif  // REDIS_CPP_COMMAND_PROCESSOR_HPP_

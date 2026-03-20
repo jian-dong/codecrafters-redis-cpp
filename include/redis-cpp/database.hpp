@@ -6,6 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -63,7 +64,15 @@ class Database {
   };
 
   struct StreamAddResult {
-    bool wrong_type = false;
+    enum class Status {
+      kOk,
+      kWrongType,
+      kIdNotGreaterThanZeroZero,
+      kIdNotGreaterThanTopItem,
+      kInvalidId,
+    };
+
+    Status status = Status::kOk;
     std::string id;
   };
 
@@ -101,6 +110,11 @@ class Database {
     std::vector<std::pair<std::string, std::string>> fields;
   };
 
+  struct StreamId {
+    int64_t milliseconds = 0;
+    int64_t sequence = 0;
+  };
+
   struct StreamValue {
     std::vector<StreamEntry> entries;
   };
@@ -111,6 +125,8 @@ class Database {
   };
 
   Entry* FindLiveEntryLocked(const std::string& key);
+  static bool ParseStreamId(std::string_view value, StreamId& id);
+  static int CompareStreamIds(const StreamId& lhs, const StreamId& rhs);
   static ValueType EntryValueType(const Entry& entry);
   static bool IsExpired(const Entry& entry,
                         std::chrono::steady_clock::time_point now);
@@ -121,4 +137,3 @@ class Database {
 };
 
 }  // namespace redis
-

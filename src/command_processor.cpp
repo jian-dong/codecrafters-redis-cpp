@@ -25,6 +25,11 @@ std::string CommandErrorMessage(const CommandError& error) {
       return "ERR syntax error";
     case CommandErrorCode::kInvalidInteger:
       return "ERR value is not an integer or out of range";
+    case CommandErrorCode::kXaddIdNotGreaterThanZeroZero:
+      return "ERR The ID specified in XADD must be greater than 0-0";
+    case CommandErrorCode::kXaddIdNotGreaterThanTopItem:
+      return "ERR The ID specified in XADD is equal or smaller than the "
+             "target stream top item";
   }
 
   return "ERR command failed";
@@ -168,13 +173,29 @@ CommandResult CommandProcessor::HandleXadd(
     fields.emplace_back(args[index], args[index + 1]);
   }
 
-  const Database::StreamAddResult result = database_.XAdd(args[1], args[2], fields);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "xadd"});
+  const Database::StreamAddResult result =
+      database_.XAdd(args[1], args[2], fields);
+  switch (result.status) {
+    case Database::StreamAddResult::Status::kOk:
+      return RespBulkString{result.id};
+    case Database::StreamAddResult::Status::kWrongType:
+      return tl::make_unexpected(
+          CommandError{.code = CommandErrorCode::kWrongType, .command = "xadd"});
+    case Database::StreamAddResult::Status::kIdNotGreaterThanZeroZero:
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kXaddIdNotGreaterThanZeroZero,
+          .command = "xadd"});
+    case Database::StreamAddResult::Status::kIdNotGreaterThanTopItem:
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kXaddIdNotGreaterThanTopItem,
+          .command = "xadd"});
+    case Database::StreamAddResult::Status::kInvalidId:
+      return tl::make_unexpected(
+          CommandError{.code = CommandErrorCode::kSyntaxError, .command = "xadd"});
   }
 
-  return RespBulkString{result.id};
+  return tl::make_unexpected(
+      CommandError{.code = CommandErrorCode::kSyntaxError, .command = "xadd"});
 }
 
 CommandResult CommandProcessor::HandleRpush(

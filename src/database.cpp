@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "redis-cpp/resp.hpp"
+
 namespace redis {
 
 std::string ValueTypeName(ValueType type) {
@@ -280,6 +282,16 @@ Database::StreamAddResult Database::XAdd(
     const std::string& key, std::string id,
     const std::vector<std::pair<std::string, std::string>>& fields) {
   std::lock_guard<std::mutex> lock(mutex_);
+
+  StreamId new_id;
+  if (!ParseStreamId(id, new_id)) {
+    return {.status = StreamAddResult::Status::kInvalidId};
+  }
+  if (CompareStreamIds(new_id, StreamId{.milliseconds = 0, .sequence = 0}) <=
+      0) {
+    return {.status = StreamAddResult::Status::kIdNotGreaterThanZeroZero};
+  }
+
   Entry* entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
     auto [it, _] = store_.emplace(key, Entry{
@@ -290,17 +302,29 @@ Database::StreamAddResult Database::XAdd(
   }
 
   if (!std::holds_alternative<StreamValue>(entry->value)) {
-    return {.wrong_type = true};
+    return {.status = StreamAddResult::Status::kWrongType};
   }
 
   entry->expires_at.reset();
-  std::vector<StreamEntry>& entries = std::get<StreamValue>(entry->value).entries;
+  std::vector<StreamEntry>& entries =
+      std::get<StreamValue>(entry->value).entries;
+  if (!entries.empty()) {
+    StreamId last_id;
+    if (!ParseStreamId(entries.back().id, last_id)) {
+      return {.status = StreamAddResult::Status::kInvalidId};
+    }
+
+    if (CompareStreamIds(new_id, last_id) <= 0) {
+      return {.status = StreamAddResult::Status::kIdNotGreaterThanTopItem};
+    }
+  }
+
   entries.push_back(StreamEntry{
       .id = std::move(id),
       .fields = fields,
   });
 
-  return {.id = entries.back().id};
+  return {.status = StreamAddResult::Status::kOk, .id = entries.back().id};
 }
 
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
@@ -316,6 +340,33 @@ Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   }
 
   return &found->second;
+}
+
+bool Database::ParseStreamId(std::string_view value, StreamId& id) {
+  const size_t separator = value.find('-');
+  if (separator == std::string_view::npos || separator == 0 ||
+      separator == value.size() - 1) {
+    return false;
+  }
+
+  return ParseMilliseconds(value.substr(0, separator), id.milliseconds) &&
+         ParseMilliseconds(value.substr(separator + 1), id.sequence);
+}
+
+int Database::CompareStreamIds(const StreamId& lhs, const StreamId& rhs) {
+  if (lhs.milliseconds < rhs.milliseconds) {
+    return -1;
+  }
+  if (lhs.milliseconds > rhs.milliseconds) {
+    return 1;
+  }
+  if (lhs.sequence < rhs.sequence) {
+    return -1;
+  }
+  if (lhs.sequence > rhs.sequence) {
+    return 1;
+  }
+  return 0;
 }
 
 ValueType Database::EntryValueType(const Entry& entry) {

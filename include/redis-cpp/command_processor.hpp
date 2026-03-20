@@ -15,6 +15,8 @@ enum class CommandErrorCode {
   kWrongType,
   kSyntaxError,
   kInvalidInteger,
+  kXaddIdNotGreaterThanZeroZero,
+  kXaddIdNotGreaterThanTopItem,
 };
 
 struct CommandError {
@@ -50,4 +52,3 @@ class CommandProcessor {
 };
 
 }  // namespace redis
-

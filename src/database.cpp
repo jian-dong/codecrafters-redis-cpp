@@ -10,6 +10,8 @@ std::string ValueTypeName(ValueType type) {
       return "string";
     case ValueType::kList:
       return "list";
+    case ValueType::kStream:
+      return "stream";
     case ValueType::kNone:
     default:
       return "none";
@@ -38,7 +40,7 @@ Database::StringLookup Database::GetString(const std::string& key) {
   }
 
   if (!std::holds_alternative<StringValue>(entry->value)) {
-    return {.type = ValueType::kList, .value = std::nullopt};
+    return {.type = EntryValueType(*entry), .value = std::nullopt};
   }
 
   return {
@@ -54,11 +56,7 @@ ValueType Database::TypeOf(const std::string& key) {
     return ValueType::kNone;
   }
 
-  if (std::holds_alternative<StringValue>(entry->value)) {
-    return ValueType::kString;
-  }
-
-  return ValueType::kList;
+  return EntryValueType(*entry);
 }
 
 Database::ListMutationResult Database::PushRight(
@@ -278,6 +276,33 @@ Database::BlockingPopResult Database::BlockingPopLeft(
   };
 }
 
+Database::StreamAddResult Database::XAdd(
+    const std::string& key, std::string id,
+    const std::vector<std::pair<std::string, std::string>>& fields) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    auto [it, _] = store_.emplace(key, Entry{
+                                           .value = StreamValue{},
+                                           .expires_at = std::nullopt,
+                                       });
+    entry = &it->second;
+  }
+
+  if (!std::holds_alternative<StreamValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  entry->expires_at.reset();
+  std::vector<StreamEntry>& entries = std::get<StreamValue>(entry->value).entries;
+  entries.push_back(StreamEntry{
+      .id = std::move(id),
+      .fields = fields,
+  });
+
+  return {.id = entries.back().id};
+}
+
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   const auto found = store_.find(key);
   if (found == store_.end()) {
@@ -291,6 +316,16 @@ Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   }
 
   return &found->second;
+}
+
+ValueType Database::EntryValueType(const Entry& entry) {
+  if (std::holds_alternative<StringValue>(entry.value)) {
+    return ValueType::kString;
+  }
+  if (std::holds_alternative<ListValue>(entry.value)) {
+    return ValueType::kList;
+  }
+  return ValueType::kStream;
 }
 
 bool Database::IsExpired(const Entry& entry,

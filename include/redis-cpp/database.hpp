@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -17,6 +18,7 @@ enum class ValueType {
   kNone,
   kString,
   kList,
+  kStream,
 };
 
 std::string ValueTypeName(ValueType type);
@@ -61,6 +63,11 @@ class Database {
     std::string value;
   };
 
+  struct StreamAddResult {
+    bool wrong_type = false;
+    std::string id;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -77,6 +84,9 @@ class Database {
   ListPopManyResult PopLeft(const std::string& key, size_t count);
   BlockingPopResult BlockingPopLeft(
       const std::string& key, std::chrono::steady_clock::duration timeout);
+  StreamAddResult XAdd(
+      const std::string& key, std::string id,
+      const std::vector<std::pair<std::string, std::string>>& fields);
 
  private:
   struct StringValue {
@@ -87,12 +97,22 @@ class Database {
     std::vector<std::string> values;
   };
 
+  struct StreamEntry {
+    std::string id;
+    std::vector<std::pair<std::string, std::string>> fields;
+  };
+
+  struct StreamValue {
+    std::vector<StreamEntry> entries;
+  };
+
   struct Entry {
-    std::variant<StringValue, ListValue> value;
+    std::variant<StringValue, ListValue, StreamValue> value;
     std::optional<std::chrono::steady_clock::time_point> expires_at;
   };
 
   Entry* FindLiveEntryLocked(const std::string& key);
+  static ValueType EntryValueType(const Entry& entry);
   static bool IsExpired(const Entry& entry,
                         std::chrono::steady_clock::time_point now);
 

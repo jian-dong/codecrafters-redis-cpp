@@ -2,6 +2,8 @@
 
 #include <chrono>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include "redis-cpp/resp.hpp"
 
@@ -48,6 +50,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "TYPE") {
     return HandleType(args);
+  }
+  if (command == "XADD") {
+    return HandleXadd(args);
   }
   if (command == "RPUSH") {
     return HandleRpush(args);
@@ -148,6 +153,28 @@ CommandResult CommandProcessor::HandleType(
   }
 
   return RespSimpleString{ValueTypeName(database_.TypeOf(args[1]))};
+}
+
+CommandResult CommandProcessor::HandleXadd(
+    const std::vector<std::string>& args) {
+  if (args.size() < 5 || args.size() % 2 == 0) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "xadd"});
+  }
+
+  std::vector<std::pair<std::string, std::string>> fields;
+  fields.reserve((args.size() - 3) / 2);
+  for (size_t index = 3; index < args.size(); index += 2) {
+    fields.emplace_back(args[index], args[index + 1]);
+  }
+
+  const Database::StreamAddResult result = database_.XAdd(args[1], args[2], fields);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "xadd"});
+  }
+
+  return RespBulkString{result.id};
 }
 
 CommandResult CommandProcessor::HandleRpush(

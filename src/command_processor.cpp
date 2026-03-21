@@ -8,6 +8,23 @@
 #include "redis-cpp/resp.hpp"
 
 namespace redis {
+namespace {
+
+std::string EncodeStreamRange(
+    const std::vector<Database::StreamRangeEntry>& entries) {
+  std::string encoded = "*" + std::to_string(entries.size()) + "\r\n";
+  for (const Database::StreamRangeEntry& entry : entries) {
+    encoded += "*2\r\n";
+    encoded += RespWriter::Write(RespBulkString{entry.id});
+    encoded += "*" + std::to_string(entry.values.size()) + "\r\n";
+    for (const std::string& value : entry.values) {
+      encoded += RespWriter::Write(RespBulkString{value});
+    }
+  }
+  return encoded;
+}
+
+}  // namespace
 
 CommandProcessor::CommandProcessor(Database& database) : database_(database) {}
 
@@ -58,6 +75,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "XADD") {
     return HandleXadd(args);
+  }
+  if (command == "XRANGE") {
+    return HandleXrange(args);
   }
   if (command == "RPUSH") {
     return HandleRpush(args);
@@ -196,6 +216,27 @@ CommandResult CommandProcessor::HandleXadd(
 
   return tl::make_unexpected(
       CommandError{.code = CommandErrorCode::kSyntaxError, .command = "xadd"});
+}
+
+CommandResult CommandProcessor::HandleXrange(
+    const std::vector<std::string>& args) {
+  if (args.size() != 4) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "xrange"});
+  }
+
+  const Database::StreamRangeResult result =
+      database_.XRange(args[1], args[2], args[3]);
+  if (result.wrong_type) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongType, .command = "xrange"});
+  }
+  if (result.invalid_id) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kSyntaxError, .command = "xrange"});
+  }
+
+  return RespRaw{EncodeStreamRange(result.entries)};
 }
 
 CommandResult CommandProcessor::HandleRpush(

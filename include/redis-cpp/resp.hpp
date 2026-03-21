@@ -32,8 +32,13 @@ struct RespArray {
   std::vector<std::string> values;
 };
 
-using RespValue = std::variant<RespSimpleString, RespBulkString, RespNullBulk,
-                               RespNullArray, RespInteger, RespArray>;
+struct RespRaw {
+  std::string encoded;
+};
+
+using RespValue =
+    std::variant<RespSimpleString, RespBulkString, RespNullBulk, RespNullArray,
+                 RespInteger, RespArray, RespRaw>;
 
 class RespParser {
  public:
@@ -57,4 +62,3 @@ bool ParseTimeoutDuration(std::string_view data,
                           std::chrono::steady_clock::duration& timeout);
 
 }  // namespace redis
-

@@ -1,6 +1,7 @@
 #include "redis-cpp/database.hpp"
 
 #include <algorithm>
+#include <limits>
 
 #include "redis-cpp/resp.hpp"
 
@@ -354,6 +355,55 @@ Database::StreamAddResult Database::XAdd(
   return {.status = StreamAddResult::Status::kOk, .id = entries.back().id};
 }
 
+Database::StreamRangeResult Database::XRange(const std::string& key,
+                                             std::string_view start,
+                                             std::string_view end) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  StreamId start_id;
+  StreamId end_id;
+  if (!ParseStreamRangeId(start, true, start_id) ||
+      !ParseStreamRangeId(end, false, end_id)) {
+    return {.invalid_id = true};
+  }
+
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<StreamValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  const std::vector<StreamEntry>& stream_entries =
+      std::get<StreamValue>(entry->value).entries;
+  std::vector<StreamRangeEntry> entries;
+  for (const StreamEntry& stream_entry : stream_entries) {
+    StreamId current_id;
+    if (!ParseStreamId(stream_entry.id, current_id)) {
+      return {.invalid_id = true};
+    }
+
+    if (CompareStreamIds(current_id, start_id) < 0) {
+      continue;
+    }
+    if (CompareStreamIds(current_id, end_id) > 0) {
+      break;
+    }
+
+    StreamRangeEntry result_entry{.id = stream_entry.id};
+    result_entry.values.reserve(stream_entry.fields.size() * 2);
+    for (const auto& [field, value] : stream_entry.fields) {
+      result_entry.values.push_back(field);
+      result_entry.values.push_back(value);
+    }
+    entries.push_back(std::move(result_entry));
+  }
+
+  return {.entries = std::move(entries)};
+}
+
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   const auto found = store_.find(key);
   if (found == store_.end()) {
@@ -408,6 +458,20 @@ bool Database::ParseXAddStreamId(std::string_view value, StreamId& id,
 
   id.sequence = 0;
   auto_generate_sequence = true;
+  return true;
+}
+
+bool Database::ParseStreamRangeId(std::string_view value, bool is_start,
+                                  StreamId& id) {
+  if (ParseStreamId(value, id)) {
+    return true;
+  }
+
+  if (!ParseMilliseconds(value, id.milliseconds)) {
+    return false;
+  }
+
+  id.sequence = is_start ? 0 : std::numeric_limits<int64_t>::max();
   return true;
 }
 

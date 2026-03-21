@@ -165,6 +165,8 @@ std::string RespWriter::Write(const RespValue& value) {
           return "*-1\r\n";
         } else if constexpr (std::is_same_v<T, RespInteger>) {
           return ":" + std::to_string(response.value) + "\r\n";
+        } else if constexpr (std::is_same_v<T, RespRaw>) {
+          return response.encoded;
         } else {
           std::string encoded =
               "*" + std::to_string(response.values.size()) + "\r\n";

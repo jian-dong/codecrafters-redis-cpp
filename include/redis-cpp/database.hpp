@@ -76,6 +76,17 @@ class Database {
     std::string id;
   };
 
+  struct StreamRangeEntry {
+    std::string id;
+    std::vector<std::string> values;
+  };
+
+  struct StreamRangeResult {
+    bool wrong_type = false;
+    bool invalid_id = false;
+    std::vector<StreamRangeEntry> entries;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -95,6 +106,8 @@ class Database {
   StreamAddResult XAdd(
       const std::string& key, std::string id,
       const std::vector<std::pair<std::string, std::string>>& fields);
+  StreamRangeResult XRange(const std::string& key, std::string_view start,
+                           std::string_view end);
 
  private:
   struct StringValue {
@@ -129,6 +142,8 @@ class Database {
   static bool ParseXAddStreamId(std::string_view value, StreamId& id,
                                 bool& auto_generate_sequence,
                                 bool& auto_generate_milliseconds);
+  static bool ParseStreamRangeId(std::string_view value, bool is_start,
+                                 StreamId& id);
   static std::string FormatStreamId(const StreamId& id);
   static int CompareStreamIds(const StreamId& lhs, const StreamId& rhs);
   static ValueType EntryValueType(const Entry& entry);

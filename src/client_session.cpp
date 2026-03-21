@@ -6,6 +6,8 @@
 #include <string_view>
 #include <vector>
 
+#include "redis-cpp/replica_manager.hpp"
+
 namespace redis {
 namespace {
 
@@ -17,10 +19,26 @@ void LogError(const Error& error) {
   }
 }
 
+std::string EncodeAsRespArray(const std::vector<std::string>& args) {
+  std::string encoded = "*" + std::to_string(args.size()) + "\r\n";
+  for (const auto& arg : args) {
+    encoded += "$" + std::to_string(arg.size()) + "\r\n" + arg + "\r\n";
+  }
+  return encoded;
+}
+
+bool IsWriteCommand(const std::string& cmd) {
+  return cmd == "SET" || cmd == "RPUSH" || cmd == "LPUSH" || cmd == "LPOP" ||
+         cmd == "XADD" || cmd == "INCR";
+}
+
 }  // namespace
 
-ClientSession::ClientSession(Socket socket, CommandProcessor& command_processor)
-    : socket_(std::move(socket)), command_processor_(command_processor) {}
+ClientSession::ClientSession(Socket socket, CommandProcessor& command_processor,
+                             ReplicaManager* replica_manager)
+    : socket_(std::move(socket)),
+      command_processor_(command_processor),
+      replica_manager_(replica_manager) {}
 
 void ClientSession::Run() {
   char buffer[kReadBufferSize];
@@ -83,6 +101,22 @@ void ClientSession::Run() {
               RespWriter::Error(CommandErrorMessage(command_result.error()));
         } else {
           response = RespWriter::Write(*command_result);
+        }
+
+        if (command_result && cmd == "PSYNC" && replica_manager_ != nullptr) {
+          Status send_status = socket_.SendAll(response);
+          if (!send_status) {
+            LogError(send_status.error());
+            return;
+          }
+          replica_manager_->AddReplica(socket_.Get());
+          // Stay in the receive loop; propagated commands arrive via
+          // replica_manager_->PropagateToAll on other threads.
+          continue;
+        }
+
+        if (command_result && IsWriteCommand(cmd) && replica_manager_ != nullptr) {
+          replica_manager_->PropagateToAll(EncodeAsRespArray(args));
         }
       }
 

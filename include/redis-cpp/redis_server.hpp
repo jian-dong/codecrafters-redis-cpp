@@ -2,6 +2,7 @@
 
 #include "redis-cpp/command_processor.hpp"
 #include "redis-cpp/database.hpp"
+#include "redis-cpp/replica_manager.hpp"
 #include "redis-cpp/result.hpp"
 #include "redis-cpp/server_config.hpp"
 #include "redis-cpp/socket.hpp"
@@ -20,6 +21,7 @@ class RedisServer {
 
   ServerConfig config_;
   Database database_;
+  ReplicaManager replica_manager_;
   CommandProcessor command_processor_;
   Socket master_socket_;
 };

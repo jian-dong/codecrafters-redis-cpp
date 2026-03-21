@@ -467,6 +467,11 @@ bool Database::ParseStreamRangeId(std::string_view value, bool is_start,
     id = {};
     return true;
   }
+  if (value == "+") {
+    id.milliseconds = std::numeric_limits<int64_t>::max();
+    id.sequence = std::numeric_limits<int64_t>::max();
+    return true;
+  }
 
   if (ParseStreamId(value, id)) {
     return true;

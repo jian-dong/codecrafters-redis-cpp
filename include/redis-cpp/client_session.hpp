@@ -17,6 +17,7 @@ class ClientSession {
   CommandProcessor& command_processor_;
   RespParser parser_;
   bool in_multi_ = false;
+  std::vector<std::vector<std::string>> queued_commands_;
 };
 
 }  // namespace redis

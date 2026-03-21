@@ -51,7 +51,19 @@ void ClientSession::Run() {
         response = "+OK\r\n";
       } else if (cmd == "EXEC" && in_multi_) {
         in_multi_ = false;
-        response = "*0\r\n";
+        response = "*" + std::to_string(queued_commands_.size()) + "\r\n";
+        for (const std::vector<std::string>& queued_args : queued_commands_) {
+          CommandResult command_result = command_processor_.Execute(queued_args);
+          if (!command_result) {
+            response += RespWriter::Error(CommandErrorMessage(command_result.error()));
+          } else {
+            response += RespWriter::Write(*command_result);
+          }
+        }
+        queued_commands_.clear();
+      } else if (in_multi_) {
+        queued_commands_.push_back(args);
+        response = "+QUEUED\r\n";
       } else {
         CommandResult command_result = command_processor_.Execute(args);
         if (!command_result) {

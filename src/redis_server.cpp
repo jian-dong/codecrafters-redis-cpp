@@ -52,7 +52,29 @@ Status RedisServer::ConnectToMaster() {
   }
   master_socket_ = std::move(*socket);
 
-  return master_socket_.SendAll("*1\r\n$4\r\nPING\r\n");
+  char buf[256];
+
+  // Step 1: PING
+  Status status = master_socket_.SendAll("*1\r\n$4\r\nPING\r\n");
+  if (!status) return status;
+  master_socket_.Receive(buf, sizeof(buf));  // +PONG\r\n
+
+  // Step 2: REPLCONF listening-port <PORT>
+  const std::string port_str = std::to_string(config_.port);
+  const std::string replconf_port =
+      "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$" +
+      std::to_string(port_str.size()) + "\r\n" + port_str + "\r\n";
+  status = master_socket_.SendAll(replconf_port);
+  if (!status) return status;
+  master_socket_.Receive(buf, sizeof(buf));  // +OK\r\n
+
+  // Step 3: REPLCONF capa psync2
+  status = master_socket_.SendAll(
+      "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n");
+  if (!status) return status;
+  master_socket_.Receive(buf, sizeof(buf));  // +OK\r\n
+
+  return {};
 }
 
 void RedisServer::ServeClient(Socket socket) {

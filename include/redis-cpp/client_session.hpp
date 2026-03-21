@@ -16,6 +16,7 @@ class ClientSession {
   Socket socket_;
   CommandProcessor& command_processor_;
   RespParser parser_;
+  bool in_multi_ = false;
 };
 
 }  // namespace redis

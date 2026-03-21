@@ -42,13 +42,24 @@ void ClientSession::Run() {
         break;
       }
 
-      CommandResult command_result = command_processor_.Execute(**command);
+      const std::vector<std::string>& args = **command;
+      const std::string cmd = args.empty() ? "" : ToUpperAscii(args[0]);
+
       std::string response;
-      if (!command_result) {
-        response =
-            RespWriter::Error(CommandErrorMessage(command_result.error()));
+      if (cmd == "MULTI") {
+        in_multi_ = true;
+        response = "+OK\r\n";
+      } else if (cmd == "EXEC" && in_multi_) {
+        in_multi_ = false;
+        response = "*0\r\n";
       } else {
-        response = RespWriter::Write(*command_result);
+        CommandResult command_result = command_processor_.Execute(args);
+        if (!command_result) {
+          response =
+              RespWriter::Error(CommandErrorMessage(command_result.error()));
+        } else {
+          response = RespWriter::Write(*command_result);
+        }
       }
 
       Status send_status = socket_.SendAll(response);

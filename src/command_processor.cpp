@@ -10,6 +10,9 @@
 namespace redis {
 namespace {
 
+constexpr std::string_view kMasterReplId =
+    "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+
 std::string EncodeStreamRange(
     const std::vector<Database::StreamRangeEntry>& entries) {
   std::string encoded = "*" + std::to_string(entries.size()) + "\r\n";
@@ -125,6 +128,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "REPLCONF") {
     return RespSimpleString{"OK"};
+  }
+  if (command == "PSYNC") {
+    return RespSimpleString{"FULLRESYNC " + std::string(kMasterReplId) + " 0"};
   }
   if (command == "EXEC") {
     return tl::make_unexpected(
@@ -528,7 +534,7 @@ CommandResult CommandProcessor::HandleInfo(
     std::string info = "# Replication\r\n";
     info += std::string("role:") + (is_replica_ ? "slave" : "master") + "\r\n";
     info += "connected_slaves:0\r\n";
-    info += "master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\n";
+    info += "master_replid:" + std::string(kMasterReplId) + "\r\n";
     info += "master_repl_offset:0\r\n";
     return RespBulkString{std::move(info)};
   }

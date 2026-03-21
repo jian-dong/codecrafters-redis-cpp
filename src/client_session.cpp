@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <string_view>
 #include <vector>
 
@@ -44,6 +45,13 @@ void ClientSession::Run() {
 
       const std::vector<std::string>& args = **command;
       const std::string cmd = args.empty() ? "" : ToUpperAscii(args[0]);
+
+      {
+        std::ostringstream log;
+        log << "[CMD]";
+        for (const auto& a : args) log << " " << a;
+        std::cerr << log.str() << "\n";
+      }
 
       std::string response;
       if (cmd == "MULTI") {

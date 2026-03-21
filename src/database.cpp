@@ -1,6 +1,7 @@
 #include "redis-cpp/database.hpp"
 
 #include <algorithm>
+#include <iostream>
 #include <limits>
 
 #include "redis-cpp/resp.hpp"
@@ -358,6 +359,7 @@ Database::StreamAddResult Database::XAdd(
     result = {.status = StreamAddResult::Status::kOk, .id = entries.back().id};
   }
 
+  std::cerr << "[XADD] added id=" << result.id << " key=" << key << " notify\n";
   stream_change_cv_.notify_all();
   return result;
 }
@@ -474,6 +476,7 @@ Database::BlockingStreamReadResult Database::BlockingXRead(
         }
       }
       resolved_streams.emplace_back(key, std::move(last_id));
+      std::cerr << "[XREAD_BLOCK] $ resolved to last_id=" << resolved_streams.back().second << " key=" << key << "\n";
     } else {
       resolved_streams.emplace_back(key, start);
     }
@@ -533,18 +536,23 @@ Database::BlockingStreamReadResult Database::BlockingXRead(
   };
 
   if (read_streams()) {
+    std::cerr << "[XREAD_BLOCK] immediate result (data already available)\n";
     return result;
   }
 
+  std::cerr << "[XREAD_BLOCK] blocking, timeout=" << std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count() << "ms\n";
   if (timeout == std::chrono::steady_clock::duration::zero()) {
     stream_change_cv_.wait(lock, read_streams);
+    std::cerr << "[XREAD_BLOCK] woke up (infinite wait)\n";
     return result;
   }
 
   if (!stream_change_cv_.wait_for(lock, timeout, read_streams)) {
+    std::cerr << "[XREAD_BLOCK] timed out\n";
     return {};
   }
 
+  std::cerr << "[XREAD_BLOCK] woke up (timed wait)\n";
   return result;
 }
 

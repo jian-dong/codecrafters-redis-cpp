@@ -61,6 +61,8 @@ std::string CommandErrorMessage(const CommandError& error) {
              "target stream top item";
     case CommandErrorCode::kExecWithoutMulti:
       return "ERR EXEC without MULTI";
+    case CommandErrorCode::kDiscardWithoutMulti:
+      return "ERR DISCARD without MULTI";
   }
 
   return "ERR command failed";
@@ -121,6 +123,11 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
     return tl::make_unexpected(
         CommandError{.code = CommandErrorCode::kExecWithoutMulti,
                      .command = "exec"});
+  }
+  if (command == "DISCARD") {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kDiscardWithoutMulti,
+                     .command = "discard"});
   }
 
   return tl::make_unexpected(CommandError{

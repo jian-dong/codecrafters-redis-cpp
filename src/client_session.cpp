@@ -61,6 +61,10 @@ void ClientSession::Run() {
           }
         }
         queued_commands_.clear();
+      } else if (cmd == "DISCARD" && in_multi_) {
+        in_multi_ = false;
+        queued_commands_.clear();
+        response = "+OK\r\n";
       } else if (in_multi_) {
         queued_commands_.push_back(args);
         response = "+QUEUED\r\n";

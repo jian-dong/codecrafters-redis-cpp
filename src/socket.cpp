@@ -1,9 +1,42 @@
 #include "redis-cpp/socket.hpp"
 
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <sys/socket.h>
 
+#include <string>
+
 namespace redis {
+
+Result<Socket> Socket::Connect(const std::string& host, int port) {
+  const std::string port_str = std::to_string(port);
+  struct addrinfo hints{};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+
+  struct addrinfo* res = nullptr;
+  if (getaddrinfo(host.c_str(), port_str.c_str(), &hints, &res) != 0 ||
+      res == nullptr) {
+    return tl::make_unexpected(
+        MakeNetworkError(NetworkErrorCode::kConnectFailed, port));
+  }
+
+  UniqueFd fd(socket(res->ai_family, res->ai_socktype, res->ai_protocol));
+  if (!fd.IsValid()) {
+    freeaddrinfo(res);
+    return tl::make_unexpected(
+        MakeNetworkError(NetworkErrorCode::kConnectFailed, port));
+  }
+
+  const int connect_result = connect(fd.Get(), res->ai_addr, res->ai_addrlen);
+  freeaddrinfo(res);
+  if (connect_result != 0) {
+    return tl::make_unexpected(
+        MakeNetworkError(NetworkErrorCode::kConnectFailed, port));
+  }
+
+  return Socket(std::move(fd));
+}
 
 ssize_t Socket::Receive(void* buffer, size_t size) const {
   return recv(fd_.Get(), buffer, size, 0);

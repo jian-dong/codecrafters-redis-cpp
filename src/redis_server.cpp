@@ -1,6 +1,7 @@
 #include "redis-cpp/redis_server.hpp"
 
 #include <iostream>
+#include <string>
 #include <thread>
 
 #include "redis-cpp/client_session.hpp"
@@ -12,6 +13,13 @@ RedisServer::RedisServer(ServerConfig config)
       command_processor_(database_, !config_.replicaof.empty()) {}
 
 Status RedisServer::Run() {
+  if (!config_.replicaof.empty()) {
+    Status handshake = ConnectToMaster();
+    if (!handshake) {
+      return handshake;
+    }
+  }
+
   Result<TcpListener> listener = TcpListener::Open(config_);
   if (!listener) {
     return tl::make_unexpected(listener.error());
@@ -31,6 +39,20 @@ Status RedisServer::Run() {
 
     std::thread(&RedisServer::ServeClient, this, std::move(*socket)).detach();
   }
+}
+
+Status RedisServer::ConnectToMaster() {
+  const size_t space = config_.replicaof.find(' ');
+  const std::string master_host = config_.replicaof.substr(0, space);
+  const int master_port = std::stoi(config_.replicaof.substr(space + 1));
+
+  Result<Socket> socket = Socket::Connect(master_host, master_port);
+  if (!socket) {
+    return tl::make_unexpected(socket.error());
+  }
+  master_socket_ = std::move(*socket);
+
+  return master_socket_.SendAll("*1\r\n$4\r\nPING\r\n");
 }
 
 void RedisServer::ServeClient(Socket socket) {

@@ -24,6 +24,7 @@ enum class NetworkErrorCode {
   kListenFailed,
   kAcceptFailed,
   kSendFailed,
+  kConnectFailed,
 };
 
 struct NetworkError {
@@ -76,6 +77,8 @@ class Error {
           return "Failed to accept client";
         case NetworkErrorCode::kSendFailed:
           return "Failed to send response";
+        case NetworkErrorCode::kConnectFailed:
+          return "Failed to connect to master";
       }
     }
 

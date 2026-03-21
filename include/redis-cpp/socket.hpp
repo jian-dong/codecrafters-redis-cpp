@@ -3,6 +3,7 @@
 #include <sys/types.h>
 
 #include <optional>
+#include <string>
 #include <string_view>
 
 #include "redis-cpp/result.hpp"
@@ -26,6 +27,8 @@ class Socket {
 
   ssize_t Receive(void* buffer, size_t size) const;
   Status SendAll(std::string_view data) const;
+
+  static Result<Socket> Connect(const std::string& host, int port);
 
  private:
   UniqueFd fd_;

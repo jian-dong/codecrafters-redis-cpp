@@ -24,6 +24,18 @@ std::string EncodeStreamRange(
   return encoded;
 }
 
+std::string EncodeXreadResponse(
+    const std::vector<std::pair<std::string, std::vector<Database::StreamRangeEntry>>>&
+        streams) {
+  std::string encoded = "*" + std::to_string(streams.size()) + "\r\n";
+  for (const auto& [key, entries] : streams) {
+    encoded += "*2\r\n";
+    encoded += RespWriter::Write(RespBulkString{key});
+    encoded += EncodeStreamRange(entries);
+  }
+  return encoded;
+}
+
 }  // namespace
 
 CommandProcessor::CommandProcessor(Database& database) : database_(database) {}
@@ -78,6 +90,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "XRANGE") {
     return HandleXrange(args);
+  }
+  if (command == "XREAD") {
+    return HandleXread(args);
   }
   if (command == "RPUSH") {
     return HandleRpush(args);
@@ -237,6 +252,42 @@ CommandResult CommandProcessor::HandleXrange(
   }
 
   return RespRaw{EncodeStreamRange(result.entries)};
+}
+
+CommandResult CommandProcessor::HandleXread(
+    const std::vector<std::string>& args) {
+  if (args.size() < 4 || ToUpperAscii(args[1]) != "STREAMS" ||
+      (args.size() - 2) % 2 != 0) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "xread"});
+  }
+
+  const size_t stream_count = (args.size() - 2) / 2;
+  std::vector<std::pair<std::string, std::vector<Database::StreamRangeEntry>>>
+      streams;
+  streams.reserve(stream_count);
+
+  for (size_t index = 0; index < stream_count; ++index) {
+    const Database::StreamRangeResult result =
+        database_.XRead(args[2 + index], args[2 + stream_count + index]);
+    if (result.wrong_type) {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kWrongType, .command = "xread"});
+    }
+    if (result.invalid_id) {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kSyntaxError, .command = "xread"});
+    }
+    if (!result.entries.empty()) {
+      streams.emplace_back(args[2 + index], result.entries);
+    }
+  }
+
+  if (streams.empty()) {
+    return RespNullArray{};
+  }
+
+  return RespRaw{EncodeXreadResponse(streams)};
 }
 
 CommandResult CommandProcessor::HandleRpush(

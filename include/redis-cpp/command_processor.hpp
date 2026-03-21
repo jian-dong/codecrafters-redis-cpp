@@ -42,6 +42,7 @@ class CommandProcessor {
   CommandResult HandleType(const std::vector<std::string>& args);
   CommandResult HandleXadd(const std::vector<std::string>& args);
   CommandResult HandleXrange(const std::vector<std::string>& args);
+  CommandResult HandleXread(const std::vector<std::string>& args);
   CommandResult HandleRpush(const std::vector<std::string>& args);
   CommandResult HandleLpush(const std::vector<std::string>& args);
   CommandResult HandleLrange(const std::vector<std::string>& args);

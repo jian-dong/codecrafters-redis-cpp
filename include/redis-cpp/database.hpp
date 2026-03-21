@@ -108,6 +108,7 @@ class Database {
       const std::vector<std::pair<std::string, std::string>>& fields);
   StreamRangeResult XRange(const std::string& key, std::string_view start,
                            std::string_view end);
+  StreamRangeResult XRead(const std::string& key, std::string_view start);
 
  private:
   struct StringValue {

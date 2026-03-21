@@ -463,6 +463,11 @@ bool Database::ParseXAddStreamId(std::string_view value, StreamId& id,
 
 bool Database::ParseStreamRangeId(std::string_view value, bool is_start,
                                   StreamId& id) {
+  if (value == "-") {
+    id = {};
+    return true;
+  }
+
   if (ParseStreamId(value, id)) {
     return true;
   }

@@ -127,7 +127,8 @@ class Database {
   Entry* FindLiveEntryLocked(const std::string& key);
   static bool ParseStreamId(std::string_view value, StreamId& id);
   static bool ParseXAddStreamId(std::string_view value, StreamId& id,
-                                bool& auto_generate_sequence);
+                                bool& auto_generate_sequence,
+                                bool& auto_generate_milliseconds);
   static std::string FormatStreamId(const StreamId& id);
   static int CompareStreamIds(const StreamId& lhs, const StreamId& rhs);
   static ValueType EntryValueType(const Entry& entry);

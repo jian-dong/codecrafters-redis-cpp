@@ -285,7 +285,9 @@ Database::StreamAddResult Database::XAdd(
 
   StreamId new_id;
   bool auto_generate_sequence = false;
-  if (!ParseXAddStreamId(id, new_id, auto_generate_sequence)) {
+  bool auto_generate_milliseconds = false;
+  if (!ParseXAddStreamId(id, new_id, auto_generate_sequence,
+                         auto_generate_milliseconds)) {
     return {.status = StreamAddResult::Status::kInvalidId};
   }
 
@@ -315,7 +317,19 @@ Database::StreamAddResult Database::XAdd(
     last_id = parsed_last_id;
   }
 
-  if (auto_generate_sequence) {
+  if (auto_generate_milliseconds) {
+    const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now());
+    new_id.milliseconds = static_cast<int64_t>(now.time_since_epoch().count());
+
+    if (last_id.has_value() && new_id.milliseconds <= last_id->milliseconds) {
+      new_id.milliseconds = last_id->milliseconds;
+      new_id.sequence = last_id->sequence + 1;
+    } else {
+      new_id.sequence = 0;
+    }
+    id = FormatStreamId(new_id);
+  } else if (auto_generate_sequence) {
     if (last_id.has_value() && last_id->milliseconds == new_id.milliseconds) {
       new_id.sequence = last_id->sequence + 1;
     } else {
@@ -367,8 +381,17 @@ bool Database::ParseStreamId(std::string_view value, StreamId& id) {
 }
 
 bool Database::ParseXAddStreamId(std::string_view value, StreamId& id,
-                                 bool& auto_generate_sequence) {
+                                 bool& auto_generate_sequence,
+                                 bool& auto_generate_milliseconds) {
   auto_generate_sequence = false;
+  auto_generate_milliseconds = false;
+  if (value == "*") {
+    id = {};
+    auto_generate_sequence = true;
+    auto_generate_milliseconds = true;
+    return true;
+  }
+
   if (ParseStreamId(value, id)) {
     return true;
   }

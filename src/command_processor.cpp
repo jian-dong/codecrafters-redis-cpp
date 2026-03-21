@@ -256,20 +256,70 @@ CommandResult CommandProcessor::HandleXrange(
 
 CommandResult CommandProcessor::HandleXread(
     const std::vector<std::string>& args) {
-  if (args.size() < 4 || ToUpperAscii(args[1]) != "STREAMS" ||
-      (args.size() - 2) % 2 != 0) {
+  if (args.size() < 4) {
     return tl::make_unexpected(CommandError{
         .code = CommandErrorCode::kWrongArity, .command = "xread"});
   }
 
-  const size_t stream_count = (args.size() - 2) / 2;
+  size_t streams_index = 1;
+  std::optional<std::chrono::steady_clock::duration> block_timeout;
+  if (ToUpperAscii(args[streams_index]) == "BLOCK") {
+    if (args.size() < 6) {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kWrongArity, .command = "xread"});
+    }
+
+    int64_t timeout_milliseconds = 0;
+    if (!ParseMilliseconds(args[streams_index + 1], timeout_milliseconds)) {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kInvalidInteger, .command = "xread"});
+    }
+
+    block_timeout = std::chrono::milliseconds(timeout_milliseconds);
+    streams_index += 2;
+  }
+
+  if (streams_index >= args.size() ||
+      ToUpperAscii(args[streams_index]) != "STREAMS" ||
+      args.size() <= streams_index + 2 ||
+      (args.size() - streams_index - 1) % 2 != 0) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "xread"});
+  }
+
+  const size_t stream_count = (args.size() - streams_index - 1) / 2;
+  std::vector<std::pair<std::string, std::string>> stream_specs;
+  stream_specs.reserve(stream_count);
+  for (size_t index = 0; index < stream_count; ++index) {
+    stream_specs.emplace_back(args[streams_index + 1 + index],
+                              args[streams_index + 1 + stream_count + index]);
+  }
+
+  if (block_timeout.has_value()) {
+    const Database::BlockingStreamReadResult result =
+        database_.BlockingXRead(stream_specs, *block_timeout);
+    if (result.wrong_type) {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kWrongType, .command = "xread"});
+    }
+    if (result.invalid_id) {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kSyntaxError, .command = "xread"});
+    }
+    if (result.streams.empty()) {
+      return RespNullArray{};
+    }
+
+    return RespRaw{EncodeXreadResponse(result.streams)};
+  }
+
   std::vector<std::pair<std::string, std::vector<Database::StreamRangeEntry>>>
       streams;
   streams.reserve(stream_count);
 
   for (size_t index = 0; index < stream_count; ++index) {
     const Database::StreamRangeResult result =
-        database_.XRead(args[2 + index], args[2 + stream_count + index]);
+        database_.XRead(stream_specs[index].first, stream_specs[index].second);
     if (result.wrong_type) {
       return tl::make_unexpected(CommandError{
           .code = CommandErrorCode::kWrongType, .command = "xread"});
@@ -279,7 +329,7 @@ CommandResult CommandProcessor::HandleXread(
           .code = CommandErrorCode::kSyntaxError, .command = "xread"});
     }
     if (!result.entries.empty()) {
-      streams.emplace_back(args[2 + index], result.entries);
+      streams.emplace_back(stream_specs[index].first, result.entries);
     }
   }
 

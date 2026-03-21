@@ -282,77 +282,84 @@ Database::BlockingPopResult Database::BlockingPopLeft(
 Database::StreamAddResult Database::XAdd(
     const std::string& key, std::string id,
     const std::vector<std::pair<std::string, std::string>>& fields) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  StreamAddResult result;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
 
-  StreamId new_id;
-  bool auto_generate_sequence = false;
-  bool auto_generate_milliseconds = false;
-  if (!ParseXAddStreamId(id, new_id, auto_generate_sequence,
-                         auto_generate_milliseconds)) {
-    return {.status = StreamAddResult::Status::kInvalidId};
-  }
-
-  Entry* entry = FindLiveEntryLocked(key);
-  if (entry == nullptr) {
-    auto [it, _] = store_.emplace(key, Entry{
-                                           .value = StreamValue{},
-                                           .expires_at = std::nullopt,
-                                       });
-    entry = &it->second;
-  }
-
-  if (!std::holds_alternative<StreamValue>(entry->value)) {
-    return {.status = StreamAddResult::Status::kWrongType};
-  }
-
-  entry->expires_at.reset();
-  std::vector<StreamEntry>& entries =
-      std::get<StreamValue>(entry->value).entries;
-
-  std::optional<StreamId> last_id;
-  if (!entries.empty()) {
-    StreamId parsed_last_id;
-    if (!ParseStreamId(entries.back().id, parsed_last_id)) {
+    StreamId new_id;
+    bool auto_generate_sequence = false;
+    bool auto_generate_milliseconds = false;
+    if (!ParseXAddStreamId(id, new_id, auto_generate_sequence,
+                           auto_generate_milliseconds)) {
       return {.status = StreamAddResult::Status::kInvalidId};
     }
-    last_id = parsed_last_id;
-  }
 
-  if (auto_generate_milliseconds) {
-    const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now());
-    new_id.milliseconds = static_cast<int64_t>(now.time_since_epoch().count());
-
-    if (last_id.has_value() && new_id.milliseconds <= last_id->milliseconds) {
-      new_id.milliseconds = last_id->milliseconds;
-      new_id.sequence = last_id->sequence + 1;
-    } else {
-      new_id.sequence = 0;
+    Entry* entry = FindLiveEntryLocked(key);
+    if (entry == nullptr) {
+      auto [it, _] = store_.emplace(key, Entry{
+                                             .value = StreamValue{},
+                                             .expires_at = std::nullopt,
+                                         });
+      entry = &it->second;
     }
-    id = FormatStreamId(new_id);
-  } else if (auto_generate_sequence) {
-    if (last_id.has_value() && last_id->milliseconds == new_id.milliseconds) {
-      new_id.sequence = last_id->sequence + 1;
-    } else {
-      new_id.sequence = (new_id.milliseconds == 0) ? 1 : 0;
+
+    if (!std::holds_alternative<StreamValue>(entry->value)) {
+      return {.status = StreamAddResult::Status::kWrongType};
     }
-    id = FormatStreamId(new_id);
+
+    entry->expires_at.reset();
+    std::vector<StreamEntry>& entries =
+        std::get<StreamValue>(entry->value).entries;
+
+    std::optional<StreamId> last_id;
+    if (!entries.empty()) {
+      StreamId parsed_last_id;
+      if (!ParseStreamId(entries.back().id, parsed_last_id)) {
+        return {.status = StreamAddResult::Status::kInvalidId};
+      }
+      last_id = parsed_last_id;
+    }
+
+    if (auto_generate_milliseconds) {
+      const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now());
+      new_id.milliseconds =
+          static_cast<int64_t>(now.time_since_epoch().count());
+
+      if (last_id.has_value() && new_id.milliseconds <= last_id->milliseconds) {
+        new_id.milliseconds = last_id->milliseconds;
+        new_id.sequence = last_id->sequence + 1;
+      } else {
+        new_id.sequence = 0;
+      }
+      id = FormatStreamId(new_id);
+    } else if (auto_generate_sequence) {
+      if (last_id.has_value() && last_id->milliseconds == new_id.milliseconds) {
+        new_id.sequence = last_id->sequence + 1;
+      } else {
+        new_id.sequence = (new_id.milliseconds == 0) ? 1 : 0;
+      }
+      id = FormatStreamId(new_id);
+    }
+
+    if (CompareStreamIds(
+            new_id, StreamId{.milliseconds = 0, .sequence = 0}) <= 0) {
+      return {.status = StreamAddResult::Status::kIdNotGreaterThanZeroZero};
+    }
+    if (last_id.has_value() && CompareStreamIds(new_id, *last_id) <= 0) {
+      return {.status = StreamAddResult::Status::kIdNotGreaterThanTopItem};
+    }
+
+    entries.push_back(StreamEntry{
+        .id = std::move(id),
+        .fields = fields,
+    });
+
+    result = {.status = StreamAddResult::Status::kOk, .id = entries.back().id};
   }
 
-  if (CompareStreamIds(new_id, StreamId{.milliseconds = 0, .sequence = 0}) <=
-      0) {
-    return {.status = StreamAddResult::Status::kIdNotGreaterThanZeroZero};
-  }
-  if (last_id.has_value() && CompareStreamIds(new_id, *last_id) <= 0) {
-    return {.status = StreamAddResult::Status::kIdNotGreaterThanTopItem};
-  }
-
-  entries.push_back(StreamEntry{
-      .id = std::move(id),
-      .fields = fields,
-  });
-
-  return {.status = StreamAddResult::Status::kOk, .id = entries.back().id};
+  stream_change_cv_.notify_all();
+  return result;
 }
 
 Database::StreamRangeResult Database::XRange(const std::string& key,
@@ -445,6 +452,80 @@ Database::StreamRangeResult Database::XRead(const std::string& key,
   }
 
   return {.entries = std::move(entries)};
+}
+
+Database::BlockingStreamReadResult Database::BlockingXRead(
+    const std::vector<std::pair<std::string, std::string>>& streams,
+    std::chrono::steady_clock::duration timeout) {
+  std::unique_lock<std::mutex> lock(mutex_);
+
+  BlockingStreamReadResult result;
+  auto read_streams = [&]() -> bool {
+    result = {};
+    result.streams.reserve(streams.size());
+
+    for (const auto& [key, start] : streams) {
+      StreamId start_id;
+      if (!ParseStreamId(start, start_id)) {
+        result.invalid_id = true;
+        return true;
+      }
+
+      Entry* entry = FindLiveEntryLocked(key);
+      if (entry == nullptr) {
+        continue;
+      }
+
+      if (!std::holds_alternative<StreamValue>(entry->value)) {
+        result.wrong_type = true;
+        return true;
+      }
+
+      const std::vector<StreamEntry>& stream_entries =
+          std::get<StreamValue>(entry->value).entries;
+      std::vector<StreamRangeEntry> entries;
+      for (const StreamEntry& stream_entry : stream_entries) {
+        StreamId current_id;
+        if (!ParseStreamId(stream_entry.id, current_id)) {
+          result.invalid_id = true;
+          return true;
+        }
+
+        if (CompareStreamIds(current_id, start_id) <= 0) {
+          continue;
+        }
+
+        StreamRangeEntry result_entry{.id = stream_entry.id};
+        result_entry.values.reserve(stream_entry.fields.size() * 2);
+        for (const auto& [field, value] : stream_entry.fields) {
+          result_entry.values.push_back(field);
+          result_entry.values.push_back(value);
+        }
+        entries.push_back(std::move(result_entry));
+      }
+
+      if (!entries.empty()) {
+        result.streams.emplace_back(key, std::move(entries));
+      }
+    }
+
+    return result.wrong_type || result.invalid_id || !result.streams.empty();
+  };
+
+  if (read_streams()) {
+    return result;
+  }
+
+  if (timeout == std::chrono::steady_clock::duration::zero()) {
+    stream_change_cv_.wait(lock, read_streams);
+    return result;
+  }
+
+  if (!stream_change_cv_.wait_for(lock, timeout, read_streams)) {
+    return {};
+  }
+
+  return result;
 }
 
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {

@@ -87,6 +87,12 @@ class Database {
     std::vector<StreamRangeEntry> entries;
   };
 
+  struct BlockingStreamReadResult {
+    bool wrong_type = false;
+    bool invalid_id = false;
+    std::vector<std::pair<std::string, std::vector<StreamRangeEntry>>> streams;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -109,6 +115,9 @@ class Database {
   StreamRangeResult XRange(const std::string& key, std::string_view start,
                            std::string_view end);
   StreamRangeResult XRead(const std::string& key, std::string_view start);
+  BlockingStreamReadResult BlockingXRead(
+      const std::vector<std::pair<std::string, std::string>>& streams,
+      std::chrono::steady_clock::duration timeout);
 
  private:
   struct StringValue {
@@ -154,6 +163,7 @@ class Database {
   std::unordered_map<std::string, Entry> store_;
   std::mutex mutex_;
   std::condition_variable list_change_cv_;
+  std::condition_variable stream_change_cv_;
 };
 
 }  // namespace redis

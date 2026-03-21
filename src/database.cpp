@@ -284,12 +284,9 @@ Database::StreamAddResult Database::XAdd(
   std::lock_guard<std::mutex> lock(mutex_);
 
   StreamId new_id;
-  if (!ParseStreamId(id, new_id)) {
+  bool auto_generate_sequence = false;
+  if (!ParseXAddStreamId(id, new_id, auto_generate_sequence)) {
     return {.status = StreamAddResult::Status::kInvalidId};
-  }
-  if (CompareStreamIds(new_id, StreamId{.milliseconds = 0, .sequence = 0}) <=
-      0) {
-    return {.status = StreamAddResult::Status::kIdNotGreaterThanZeroZero};
   }
 
   Entry* entry = FindLiveEntryLocked(key);
@@ -308,15 +305,31 @@ Database::StreamAddResult Database::XAdd(
   entry->expires_at.reset();
   std::vector<StreamEntry>& entries =
       std::get<StreamValue>(entry->value).entries;
+
+  std::optional<StreamId> last_id;
   if (!entries.empty()) {
-    StreamId last_id;
-    if (!ParseStreamId(entries.back().id, last_id)) {
+    StreamId parsed_last_id;
+    if (!ParseStreamId(entries.back().id, parsed_last_id)) {
       return {.status = StreamAddResult::Status::kInvalidId};
     }
+    last_id = parsed_last_id;
+  }
 
-    if (CompareStreamIds(new_id, last_id) <= 0) {
-      return {.status = StreamAddResult::Status::kIdNotGreaterThanTopItem};
+  if (auto_generate_sequence) {
+    if (last_id.has_value() && last_id->milliseconds == new_id.milliseconds) {
+      new_id.sequence = last_id->sequence + 1;
+    } else {
+      new_id.sequence = (new_id.milliseconds == 0) ? 1 : 0;
     }
+    id = FormatStreamId(new_id);
+  }
+
+  if (CompareStreamIds(new_id, StreamId{.milliseconds = 0, .sequence = 0}) <=
+      0) {
+    return {.status = StreamAddResult::Status::kIdNotGreaterThanZeroZero};
+  }
+  if (last_id.has_value() && CompareStreamIds(new_id, *last_id) <= 0) {
+    return {.status = StreamAddResult::Status::kIdNotGreaterThanTopItem};
   }
 
   entries.push_back(StreamEntry{
@@ -351,6 +364,32 @@ bool Database::ParseStreamId(std::string_view value, StreamId& id) {
 
   return ParseMilliseconds(value.substr(0, separator), id.milliseconds) &&
          ParseMilliseconds(value.substr(separator + 1), id.sequence);
+}
+
+bool Database::ParseXAddStreamId(std::string_view value, StreamId& id,
+                                 bool& auto_generate_sequence) {
+  auto_generate_sequence = false;
+  if (ParseStreamId(value, id)) {
+    return true;
+  }
+
+  const size_t separator = value.find('-');
+  if (separator == std::string_view::npos || separator == 0 ||
+      separator != value.size() - 2 || value.back() != '*') {
+    return false;
+  }
+
+  if (!ParseMilliseconds(value.substr(0, separator), id.milliseconds)) {
+    return false;
+  }
+
+  id.sequence = 0;
+  auto_generate_sequence = true;
+  return true;
+}
+
+std::string Database::FormatStreamId(const StreamId& id) {
+  return std::to_string(id.milliseconds) + "-" + std::to_string(id.sequence);
 }
 
 int Database::CompareStreamIds(const StreamId& lhs, const StreamId& rhs) {

@@ -548,6 +548,35 @@ Database::BlockingStreamReadResult Database::BlockingXRead(
   return result;
 }
 
+Database::IncrResult Database::Incr(const std::string& key) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+
+  int64_t current = 0;
+  if (entry != nullptr) {
+    if (!std::holds_alternative<StringValue>(entry->value)) {
+      return {.wrong_type = true};
+    }
+    const std::string& str = std::get<StringValue>(entry->value).value;
+    if (!ParseSignedInteger(str, current)) {
+      return {.not_integer = true};
+    }
+  }
+
+  const int64_t new_value = current + 1;
+  const std::string new_str = std::to_string(new_value);
+
+  if (entry == nullptr) {
+    store_[key] = Entry{.value = StringValue{.value = new_str},
+                        .expires_at = std::nullopt};
+  } else {
+    std::get<StringValue>(entry->value).value = new_str;
+    entry->expires_at.reset();
+  }
+
+  return {.value = new_value};
+}
+
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   const auto found = store_.find(key);
   if (found == store_.end()) {

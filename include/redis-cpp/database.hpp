@@ -93,6 +93,12 @@ class Database {
     std::vector<std::pair<std::string, std::vector<StreamRangeEntry>>> streams;
   };
 
+  struct IncrResult {
+    bool wrong_type = false;
+    bool not_integer = false;
+    int64_t value = 0;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -118,6 +124,7 @@ class Database {
   BlockingStreamReadResult BlockingXRead(
       const std::vector<std::pair<std::string, std::string>>& streams,
       std::chrono::steady_clock::duration timeout);
+  IncrResult Incr(const std::string& key);
 
  private:
   struct StringValue {

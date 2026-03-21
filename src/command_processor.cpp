@@ -112,6 +112,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "BLPOP") {
     return HandleBlpop(args);
   }
+  if (command == "INCR") {
+    return HandleIncr(args);
+  }
 
   return tl::make_unexpected(CommandError{
       .code = CommandErrorCode::kUnknownCommand, .command = args[0]});
@@ -474,6 +477,26 @@ CommandResult CommandProcessor::HandleBlpop(
   }
 
   return RespArray{{result.key, result.value}};
+}
+
+CommandResult CommandProcessor::HandleIncr(
+    const std::vector<std::string>& args) {
+  if (args.size() != 2) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "incr"});
+  }
+
+  const Database::IncrResult result = database_.Incr(args[1]);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "incr"});
+  }
+  if (result.not_integer) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kInvalidInteger, .command = "incr"});
+  }
+
+  return RespInteger{result.value};
 }
 
 }  // namespace redis

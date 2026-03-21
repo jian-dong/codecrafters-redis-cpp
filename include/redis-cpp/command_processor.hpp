@@ -49,6 +49,7 @@ class CommandProcessor {
   CommandResult HandleLlen(const std::vector<std::string>& args);
   CommandResult HandleLpop(const std::vector<std::string>& args);
   CommandResult HandleBlpop(const std::vector<std::string>& args);
+  CommandResult HandleIncr(const std::vector<std::string>& args);
 
   Database& database_;
 };

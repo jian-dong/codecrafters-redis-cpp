@@ -145,7 +145,7 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
     return HandleInfo(args);
   }
   if (command == "REPLCONF") {
-    return RespSimpleString{"OK"};
+    return HandleReplconf(args);
   }
   if (command == "PSYNC") {
     const std::string& rdb = GetEmptyRdb();
@@ -563,6 +563,16 @@ CommandResult CommandProcessor::HandleInfo(
   }
 
   return RespBulkString{""};
+}
+
+CommandResult CommandProcessor::HandleReplconf(
+    const std::vector<std::string>& args) {
+  if (is_replica_ && args.size() == 3 &&
+      ToUpperAscii(args[1]) == "GETACK" && args[2] == "*") {
+    return RespArray{{"REPLCONF", "ACK", "0"}};
+  }
+
+  return RespSimpleString{"OK"};
 }
 
 }  // namespace redis

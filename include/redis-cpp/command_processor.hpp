@@ -53,6 +53,7 @@ class CommandProcessor {
   CommandResult HandleBlpop(const std::vector<std::string>& args);
   CommandResult HandleIncr(const std::vector<std::string>& args);
   CommandResult HandleInfo(const std::vector<std::string>& args);
+  CommandResult HandleReplconf(const std::vector<std::string>& args);
 
   Database& database_;
   bool is_replica_ = false;

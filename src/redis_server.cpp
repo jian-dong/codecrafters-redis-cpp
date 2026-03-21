@@ -10,6 +10,11 @@
 namespace redis {
 namespace {
 
+bool IsReplconfGetack(const std::vector<std::string>& args) {
+  return args.size() == 3 && ToUpperAscii(args[0]) == "REPLCONF" &&
+         ToUpperAscii(args[1]) == "GETACK" && args[2] == "*";
+}
+
 // Buffered reader for the master socket during handshake.
 class MasterReader {
  public:
@@ -153,9 +158,17 @@ void RedisServer::ProcessReplicatedCommands() {
   while (true) {
     // Drain all fully-buffered commands before blocking on recv.
     while (true) {
-      Result<std::optional<std::vector<std::string>>> cmd = parser.NextCommand();
+      Result<std::optional<std::vector<std::string>>> cmd =
+          parser.NextCommand();
       if (!cmd || !cmd->has_value()) break;
-      (void)command_processor_.Execute(**cmd);  // apply to DB; no response to master
+      CommandResult command_result = command_processor_.Execute(**cmd);
+      if (command_result && IsReplconfGetack(**cmd)) {
+        Status send_status =
+            master_socket_.SendAll(RespWriter::Write(*command_result));
+        if (!send_status) {
+          return;
+        }
+      }
     }
 
     const ssize_t n = master_socket_.Receive(buffer, sizeof(buffer));

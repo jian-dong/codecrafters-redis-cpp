@@ -115,6 +115,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "INCR") {
     return HandleIncr(args);
   }
+  if (command == "MULTI") {
+    return RespSimpleString{"OK"};
+  }
 
   return tl::make_unexpected(CommandError{
       .code = CommandErrorCode::kUnknownCommand, .command = args[0]});

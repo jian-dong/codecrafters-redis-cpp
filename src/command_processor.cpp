@@ -119,6 +119,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "INCR") {
     return HandleIncr(args);
   }
+  if (command == "INFO") {
+    return HandleInfo(args);
+  }
   if (command == "EXEC") {
     return tl::make_unexpected(
         CommandError{.code = CommandErrorCode::kExecWithoutMulti,
@@ -511,6 +514,22 @@ CommandResult CommandProcessor::HandleIncr(
   }
 
   return RespInteger{result.value};
+}
+
+CommandResult CommandProcessor::HandleInfo(
+    const std::vector<std::string>& args) {
+  const std::string section =
+      args.size() >= 2 ? ToUpperAscii(args[1]) : "ALL";
+  if (section == "REPLICATION" || section == "ALL") {
+    std::string info = "# Replication\r\n";
+    info += "role:master\r\n";
+    info += "connected_slaves:0\r\n";
+    info += "master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\n";
+    info += "master_repl_offset:0\r\n";
+    return RespBulkString{std::move(info)};
+  }
+
+  return RespBulkString{""};
 }
 
 }  // namespace redis

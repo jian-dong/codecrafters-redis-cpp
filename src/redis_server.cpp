@@ -74,6 +74,12 @@ Status RedisServer::ConnectToMaster() {
   if (!status) return status;
   master_socket_.Receive(buf, sizeof(buf));  // +OK\r\n
 
+  // Step 4: PSYNC ? -1
+  status = master_socket_.SendAll(
+      "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n");
+  if (!status) return status;
+  master_socket_.Receive(buf, sizeof(buf));  // +FULLRESYNC <ID> 0\r\n
+
   return {};
 }
 

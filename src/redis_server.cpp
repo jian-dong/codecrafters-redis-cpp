@@ -8,7 +8,8 @@
 namespace redis {
 
 RedisServer::RedisServer(ServerConfig config)
-    : config_(config), command_processor_(database_) {}
+    : config_(config),
+      command_processor_(database_, !config_.replicaof.empty()) {}
 
 Status RedisServer::Run() {
   Result<TcpListener> listener = TcpListener::Open(config_);

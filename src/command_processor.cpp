@@ -38,7 +38,8 @@ std::string EncodeXreadResponse(
 
 }  // namespace
 
-CommandProcessor::CommandProcessor(Database& database) : database_(database) {}
+CommandProcessor::CommandProcessor(Database& database, bool is_replica)
+    : database_(database), is_replica_(is_replica) {}
 
 std::string CommandErrorMessage(const CommandError& error) {
   switch (error.code) {
@@ -522,7 +523,7 @@ CommandResult CommandProcessor::HandleInfo(
       args.size() >= 2 ? ToUpperAscii(args[1]) : "ALL";
   if (section == "REPLICATION" || section == "ALL") {
     std::string info = "# Replication\r\n";
-    info += "role:master\r\n";
+    info += std::string("role:") + (is_replica_ ? "slave" : "master") + "\r\n";
     info += "connected_slaves:0\r\n";
     info += "master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\n";
     info += "master_repl_offset:0\r\n";

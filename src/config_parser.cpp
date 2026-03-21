@@ -13,6 +13,7 @@ Result<ServerConfig> ConfigParser::Parse(int argc, char** argv) const {
   app.add_option("--backlog", config.backlog, "listen backlog")
       ->capture_default_str()
       ->check(CLI::PositiveNumber);
+  app.add_option("--replicaof", config.replicaof, "master host and port");
 
   try {
     app.parse(argc, argv);

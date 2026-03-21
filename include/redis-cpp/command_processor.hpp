@@ -32,7 +32,7 @@ std::string CommandErrorMessage(const CommandError& error);
 
 class CommandProcessor {
  public:
-  explicit CommandProcessor(Database& database);
+  explicit CommandProcessor(Database& database, bool is_replica = false);
 
   CommandResult Execute(const std::vector<std::string>& args);
 
@@ -55,6 +55,7 @@ class CommandProcessor {
   CommandResult HandleInfo(const std::vector<std::string>& args);
 
   Database& database_;
+  bool is_replica_ = false;
 };
 
 }  // namespace redis

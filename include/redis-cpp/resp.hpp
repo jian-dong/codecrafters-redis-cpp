@@ -44,6 +44,7 @@ class RespParser {
  public:
   void Append(std::string_view data);
   Result<std::optional<std::vector<std::string>>> NextCommand();
+  size_t BufferSize() const { return buffer_.size(); }
 
  private:
   std::string buffer_;

@@ -147,6 +147,7 @@ Status RedisServer::ConnectToMaster() {
 
 void RedisServer::ProcessReplicatedCommands() {
   RespParser parser;
+  size_t replica_offset = 0;
 
   // Feed any bytes received during handshake that came after the RDB.
   if (!master_leftover_.empty()) {
@@ -158,17 +159,23 @@ void RedisServer::ProcessReplicatedCommands() {
   while (true) {
     // Drain all fully-buffered commands before blocking on recv.
     while (true) {
+      const size_t buf_before = parser.BufferSize();
       Result<std::optional<std::vector<std::string>>> cmd =
           parser.NextCommand();
       if (!cmd || !cmd->has_value()) break;
-      CommandResult command_result = command_processor_.Execute(**cmd);
-      if (command_result && IsReplconfGetack(**cmd)) {
-        Status send_status =
-            master_socket_.SendAll(RespWriter::Write(*command_result));
-        if (!send_status) {
-          return;
-        }
+      const size_t cmd_bytes = buf_before - parser.BufferSize();
+
+      if (IsReplconfGetack(**cmd)) {
+        const std::string response = RespWriter::Write(
+            RespArray{{"REPLCONF", "ACK", std::to_string(replica_offset)}});
+        Status send_status = master_socket_.SendAll(response);
+        if (!send_status) return;
+        replica_offset += cmd_bytes;
+        continue;
       }
+
+      (void)command_processor_.Execute(**cmd);
+      replica_offset += cmd_bytes;
     }
 
     const ssize_t n = master_socket_.Receive(buffer, sizeof(buffer));

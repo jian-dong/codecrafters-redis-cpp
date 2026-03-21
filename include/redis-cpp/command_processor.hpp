@@ -17,6 +17,7 @@ enum class CommandErrorCode {
   kInvalidInteger,
   kXaddIdNotGreaterThanZeroZero,
   kXaddIdNotGreaterThanTopItem,
+  kExecWithoutMulti,
 };
 
 struct CommandError {

@@ -59,6 +59,8 @@ std::string CommandErrorMessage(const CommandError& error) {
     case CommandErrorCode::kXaddIdNotGreaterThanTopItem:
       return "ERR The ID specified in XADD is equal or smaller than the "
              "target stream top item";
+    case CommandErrorCode::kExecWithoutMulti:
+      return "ERR EXEC without MULTI";
   }
 
   return "ERR command failed";
@@ -117,6 +119,11 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "MULTI") {
     return RespSimpleString{"OK"};
+  }
+  if (command == "EXEC") {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kExecWithoutMulti,
+                     .command = "exec"});
   }
 
   return tl::make_unexpected(CommandError{

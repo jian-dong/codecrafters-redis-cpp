@@ -459,12 +459,32 @@ Database::BlockingStreamReadResult Database::BlockingXRead(
     std::chrono::steady_clock::duration timeout) {
   std::unique_lock<std::mutex> lock(mutex_);
 
+  // Resolve '$' to the current last ID of each stream before waiting.
+  std::vector<std::pair<std::string, std::string>> resolved_streams;
+  resolved_streams.reserve(streams.size());
+  for (const auto& [key, start] : streams) {
+    if (start == "$") {
+      std::string last_id = "0-0";
+      Entry* entry = FindLiveEntryLocked(key);
+      if (entry != nullptr && std::holds_alternative<StreamValue>(entry->value)) {
+        const std::vector<StreamEntry>& entries =
+            std::get<StreamValue>(entry->value).entries;
+        if (!entries.empty()) {
+          last_id = entries.back().id;
+        }
+      }
+      resolved_streams.emplace_back(key, std::move(last_id));
+    } else {
+      resolved_streams.emplace_back(key, start);
+    }
+  }
+
   BlockingStreamReadResult result;
   auto read_streams = [&]() -> bool {
     result = {};
-    result.streams.reserve(streams.size());
+    result.streams.reserve(resolved_streams.size());
 
-    for (const auto& [key, start] : streams) {
+    for (const auto& [key, start] : resolved_streams) {
       StreamId start_id;
       if (!ParseStreamId(start, start_id)) {
         result.invalid_id = true;

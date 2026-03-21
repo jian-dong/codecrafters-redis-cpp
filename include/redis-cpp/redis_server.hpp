@@ -18,12 +18,14 @@ class RedisServer {
  private:
   void ServeClient(Socket socket);
   Status ConnectToMaster();
+  void ProcessReplicatedCommands();
 
   ServerConfig config_;
   Database database_;
   ReplicaManager replica_manager_;
   CommandProcessor command_processor_;
   Socket master_socket_;
+  std::string master_leftover_;
 };
 
 }  // namespace redis

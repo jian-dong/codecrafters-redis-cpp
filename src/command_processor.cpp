@@ -597,14 +597,13 @@ CommandResult CommandProcessor::HandleWait(
                      .command = "wait"});
   }
 
-  (void)num_replicas;
-  (void)timeout_milliseconds;
+  if (replica_manager_ == nullptr) {
+    return RespInteger{0};
+  }
 
-  const int64_t replica_count =
-      replica_manager_ == nullptr
-          ? 0
-          : static_cast<int64_t>(replica_manager_->ReplicaCount());
-  return RespInteger{replica_count};
+  return RespInteger{replica_manager_->WaitForReplicas(
+      static_cast<size_t>(num_replicas),
+      std::chrono::milliseconds(timeout_milliseconds))};
 }
 
 }  // namespace redis

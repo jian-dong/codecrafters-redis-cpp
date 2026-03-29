@@ -32,6 +32,11 @@ bool IsWriteCommand(const std::string& cmd) {
          cmd == "XADD" || cmd == "INCR";
 }
 
+bool TryParseReplicaAck(const std::vector<std::string>& args, int64_t& offset) {
+  return args.size() == 3 && ToUpperAscii(args[0]) == "REPLCONF" &&
+         ToUpperAscii(args[1]) == "ACK" && ParseMilliseconds(args[2], offset);
+}
+
 }  // namespace
 
 ClientSession::ClientSession(Socket socket, CommandProcessor& command_processor,
@@ -69,6 +74,13 @@ void ClientSession::Run() {
         log << "[CMD]";
         for (const auto& a : args) log << " " << a;
         std::cerr << log.str() << "\n";
+      }
+
+      int64_t replica_offset = 0;
+      if (replica_manager_ != nullptr &&
+          TryParseReplicaAck(args, replica_offset) &&
+          replica_manager_->UpdateReplicaAck(socket_.Get(), replica_offset)) {
+        continue;
       }
 
       std::string response;

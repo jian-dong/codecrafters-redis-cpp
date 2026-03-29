@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -95,6 +96,55 @@ void TestWaitReturnsConnectedReplicaCount() {
   close(replica_sockets[1]);
 }
 
+void TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite() {
+  Database database;
+  ReplicaManager replica_manager;
+  CommandProcessor processor(database, false, &replica_manager);
+
+  int replica_sockets[2];
+  const int socket_pair_status =
+      socketpair(AF_UNIX, SOCK_STREAM, 0, replica_sockets);
+  Expect(socket_pair_status == 0, "socketpair should succeed");
+
+  replica_manager.AddReplica(replica_sockets[0]);
+
+  const std::string write_command =
+      "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\n123\r\n";
+  replica_manager.PropagateToAll(write_command);
+
+  char buffer[256];
+  const ssize_t write_bytes =
+      recv(replica_sockets[1], buffer, sizeof(buffer), 0);
+  Expect(write_bytes == static_cast<ssize_t>(write_command.size()),
+         "replica should receive the propagated write command");
+
+  auto wait_result = std::async(std::launch::async, [&]() {
+    return processor.Execute({"WAIT", "1", "200"});
+  });
+
+  const std::string expected_getack =
+      "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n";
+  const ssize_t getack_bytes = recv(replica_sockets[1], buffer, sizeof(buffer), 0);
+  Expect(getack_bytes == static_cast<ssize_t>(expected_getack.size()),
+         "WAIT should request acknowledgements from replicas");
+  Expect(std::string(buffer, buffer + getack_bytes) == expected_getack,
+         "WAIT should send REPLCONF GETACK *");
+
+  const bool updated = replica_manager.UpdateReplicaAck(
+      replica_sockets[0], static_cast<int64_t>(write_command.size()));
+  Expect(updated, "replica acknowledgement should update the replica manager");
+
+  redis::CommandResult result = wait_result.get();
+  Expect(result.has_value(), "WAIT should succeed after the replica ACKs");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "WAIT should return a RESP integer after waiting");
+  Expect(std::get<RespInteger>(*result).value == 1,
+         "WAIT should report the replica that acknowledged the write");
+
+  close(replica_sockets[0]);
+  close(replica_sockets[1]);
+}
+
 }  // namespace
 
 int main() {
@@ -102,5 +152,6 @@ int main() {
   TestMasterReplconfStillReturnsOk();
   TestWaitReturnsZeroImmediatelyWithoutReplicas();
   TestWaitReturnsConnectedReplicaCount();
+  TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite();
   return 0;
 }

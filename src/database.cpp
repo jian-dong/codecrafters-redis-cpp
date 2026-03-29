@@ -53,6 +53,27 @@ Database::StringLookup Database::GetString(const std::string& key) {
   };
 }
 
+std::vector<std::string> Database::Keys() {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  const auto now = std::chrono::steady_clock::now();
+  std::vector<std::string> keys;
+  keys.reserve(store_.size());
+
+  for (auto it = store_.begin(); it != store_.end();) {
+    if (IsExpired(it->second, now)) {
+      it = store_.erase(it);
+      continue;
+    }
+
+    keys.push_back(it->first);
+    ++it;
+  }
+
+  std::sort(keys.begin(), keys.end());
+  return keys;
+}
+
 ValueType Database::TypeOf(const std::string& key) {
   std::lock_guard<std::mutex> lock(mutex_);
   Entry* entry = FindLiveEntryLocked(key);

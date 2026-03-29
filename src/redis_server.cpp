@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "redis-cpp/client_session.hpp"
+#include "redis-cpp/rdb_loader.hpp"
 #include "redis-cpp/resp.hpp"
 
 namespace redis {
@@ -65,6 +66,8 @@ RedisServer::RedisServer(ServerConfig config)
                          &replica_manager_, &config_) {}
 
 Status RedisServer::Run() {
+  LoadDatabaseFromRdb(config_, database_);
+
   if (!config_.replicaof.empty()) {
     Status handshake = ConnectToMaster();
     if (!handshake) {

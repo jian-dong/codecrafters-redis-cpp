@@ -1,4 +1,6 @@
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <sys/socket.h>
@@ -8,6 +10,7 @@
 
 #include "redis-cpp/command_processor.hpp"
 #include "redis-cpp/replica_manager.hpp"
+#include "redis-cpp/rdb_loader.hpp"
 
 namespace {
 
@@ -187,6 +190,63 @@ void TestConfigGetDbfilenameReturnsConfiguredFilename() {
          "CONFIG GET dbfilename should encode as the expected RESP array");
 }
 
+void TestKeysReturnsStoredKeys() {
+  Database database;
+  database.SetString("foo", "123");
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result = processor.Execute({"KEYS", "*"});
+  Expect(result.has_value(), "KEYS * should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "KEYS * should return a RESP array");
+
+  const auto& response = std::get<RespArray>(*result);
+  Expect(response.values == std::vector<std::string>({"foo"}),
+         "KEYS * should return the stored key");
+  Expect(RespWriter::Write(*result) == "*1\r\n$3\r\nfoo\r\n",
+         "KEYS * should encode the key as a RESP array");
+}
+
+void TestRdbLoaderImportsSingleStringKey() {
+  Database database;
+  ServerConfig config;
+
+  char directory_template[] = "/tmp/redis-rdb-testXXXXXX";
+  char* directory = mkdtemp(directory_template);
+  Expect(directory != nullptr, "mkdtemp should succeed");
+
+  config.dir = directory;
+  config.dbfilename = "dump.rdb";
+  const std::filesystem::path file_path =
+      std::filesystem::path(config.dir) / config.dbfilename;
+
+  const std::vector<unsigned char> rdb_bytes = {
+      'R',  'E',  'D',  'I',  'S',  '0',  '0',  '1',  '1',
+      0xFE, 0x00, 0xFB, 0x01, 0x00, 0x00, 0x03, 'f',  'o',
+      'o',  0x03, 'b',  'a',  'r',  0xFF, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00,
+  };
+  {
+    std::ofstream output(file_path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(rdb_bytes.data()),
+                 static_cast<std::streamsize>(rdb_bytes.size()));
+  }
+
+  LoadDatabaseFromRdb(config, database);
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result = processor.Execute({"KEYS", "*"});
+  Expect(result.has_value(), "KEYS * should succeed after loading RDB");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "KEYS * should return a RESP array after loading RDB");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"foo"}),
+         "RDB loader should import the single key from the RDB file");
+
+  std::filesystem::remove(file_path);
+  std::filesystem::remove(config.dir);
+}
+
 }  // namespace
 
 int main() {
@@ -197,5 +257,7 @@ int main() {
   TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite();
   TestConfigGetDirReturnsConfiguredDirectory();
   TestConfigGetDbfilenameReturnsConfiguredFilename();
+  TestKeysReturnsStoredKeys();
+  TestRdbLoaderImportsSingleStringKey();
   return 0;
 }

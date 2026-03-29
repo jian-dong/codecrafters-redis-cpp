@@ -103,6 +103,7 @@ class Database {
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
   StringLookup GetString(const std::string& key);
+  std::vector<std::string> Keys();
   ValueType TypeOf(const std::string& key);
 
   ListMutationResult PushRight(const std::string& key,

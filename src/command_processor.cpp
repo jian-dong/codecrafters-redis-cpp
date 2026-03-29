@@ -113,6 +113,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "GET") {
     return HandleGet(args);
   }
+  if (command == "KEYS") {
+    return HandleKeys(args);
+  }
   if (command == "TYPE") {
     return HandleType(args);
   }
@@ -247,6 +250,20 @@ CommandResult CommandProcessor::HandleGet(
   }
 
   return RespBulkString{*result.value};
+}
+
+CommandResult CommandProcessor::HandleKeys(
+    const std::vector<std::string>& args) {
+  if (args.size() != 2) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "keys"});
+  }
+
+  if (args[1] != "*") {
+    return RespArray{{}};
+  }
+
+  return RespArray{database_.Keys()};
 }
 
 CommandResult CommandProcessor::HandleType(

@@ -340,6 +340,114 @@ void TestPublishReturnsSubscribedClientCount() {
   stop_client(publisher);
 }
 
+void TestUnsubscribeRemovesChannelAndStopsDelivery() {
+  Database database;
+  CommandProcessor processor(database, false);
+  PubSubManager pubsub_manager;
+
+  auto start_client = [&](const std::vector<std::string>& initial_commands) {
+    int fds[2];
+    const int socket_pair_status = socketpair(AF_UNIX, SOCK_STREAM, 0, fds);
+    Expect(socket_pair_status == 0, "socketpair should succeed");
+
+    auto session = std::make_unique<ClientSession>(
+        redis::Socket(redis::UniqueFd(fds[0])), processor, nullptr,
+        &pubsub_manager);
+    std::thread session_thread([session = session.get()]() { session->Run(); });
+
+    char buffer[256];
+    for (const std::string& command : initial_commands) {
+      Expect(send(fds[1], command.data(), command.size(), 0) ==
+                 static_cast<ssize_t>(command.size()),
+             "initial client command should be written fully");
+      const ssize_t received = recv(fds[1], buffer, sizeof(buffer), 0);
+      Expect(received > 0, "initial client command should receive a response");
+    }
+
+    struct RunningClient {
+      int fd = -1;
+      std::unique_ptr<ClientSession> session;
+      std::thread thread;
+    };
+
+    return RunningClient{
+        .fd = fds[1],
+        .session = std::move(session),
+        .thread = std::move(session_thread),
+    };
+  };
+
+  auto subscriber = start_client({
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nfoo\r\n",
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nbaz\r\n",
+  });
+  auto publisher = start_client({});
+
+  char buffer[256];
+
+  const std::string publish_before =
+      "*3\r\n$7\r\nPUBLISH\r\n$3\r\nfoo\r\n$18\r\nbefore-unsubscribe\r\n";
+  Expect(send(publisher.fd, publish_before.data(), publish_before.size(), 0) ==
+             static_cast<ssize_t>(publish_before.size()),
+         "initial publish should be written fully");
+  ssize_t received = recv(publisher.fd, buffer, sizeof(buffer), 0);
+  Expect(received > 0, "initial publish should receive a response");
+  Expect(std::string(buffer, buffer + received) == ":1\r\n",
+         "initial publish should report one subscriber");
+
+  received = recv(subscriber.fd, buffer, sizeof(buffer), 0);
+  Expect(received > 0, "subscriber should receive the first published message");
+  Expect(std::string(buffer, buffer + received) ==
+             "*3\r\n$7\r\nmessage\r\n$3\r\nfoo\r\n$18\r\nbefore-unsubscribe\r\n",
+         "subscriber should receive the initial foo message");
+
+  const std::string unsubscribe_unknown =
+      "*2\r\n$11\r\nUNSUBSCRIBE\r\n$3\r\nbar\r\n";
+  Expect(send(subscriber.fd, unsubscribe_unknown.data(),
+              unsubscribe_unknown.size(), 0) ==
+             static_cast<ssize_t>(unsubscribe_unknown.size()),
+         "UNSUBSCRIBE unknown channel should be written fully");
+  received = recv(subscriber.fd, buffer, sizeof(buffer), 0);
+  Expect(received > 0, "UNSUBSCRIBE unknown channel should receive a response");
+  Expect(std::string(buffer, buffer + received) ==
+             "*3\r\n$11\r\nunsubscribe\r\n$3\r\nbar\r\n:2\r\n",
+         "UNSUBSCRIBE unknown channel should keep the subscribed count");
+
+  const std::string unsubscribe_foo =
+      "*2\r\n$11\r\nUNSUBSCRIBE\r\n$3\r\nfoo\r\n";
+  Expect(send(subscriber.fd, unsubscribe_foo.data(), unsubscribe_foo.size(), 0) ==
+             static_cast<ssize_t>(unsubscribe_foo.size()),
+         "UNSUBSCRIBE foo should be written fully");
+  received = recv(subscriber.fd, buffer, sizeof(buffer), 0);
+  Expect(received > 0, "UNSUBSCRIBE foo should receive a response");
+  Expect(std::string(buffer, buffer + received) ==
+             "*3\r\n$11\r\nunsubscribe\r\n$3\r\nfoo\r\n:1\r\n",
+         "UNSUBSCRIBE foo should reduce the subscribed count");
+
+  const std::string publish_after =
+      "*3\r\n$7\r\nPUBLISH\r\n$3\r\nfoo\r\n$17\r\nafter-unsubscribe\r\n";
+  Expect(send(publisher.fd, publish_after.data(), publish_after.size(), 0) ==
+             static_cast<ssize_t>(publish_after.size()),
+         "publish after unsubscribe should be written fully");
+  received = recv(publisher.fd, buffer, sizeof(buffer), 0);
+  Expect(received > 0, "publish after unsubscribe should receive a response");
+  Expect(std::string(buffer, buffer + received) == ":0\r\n",
+         "publish after unsubscribe should report zero subscribers");
+
+  errno = 0;
+  received = recv(subscriber.fd, buffer, sizeof(buffer), MSG_DONTWAIT);
+  Expect(received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK),
+         "client should not receive messages for unsubscribed channels");
+
+  auto stop_client = [](auto& client) {
+    close(client.fd);
+    client.thread.join();
+  };
+
+  stop_client(subscriber);
+  stop_client(publisher);
+}
+
 void TestWaitReturnsZeroImmediatelyWithoutReplicas() {
   Database database;
   CommandProcessor processor(database, false);
@@ -693,6 +801,7 @@ int main() {
   TestSubscribedModeRejectsDisallowedCommands();
   TestSubscribedModePingUsesPubsubResponse();
   TestPublishReturnsSubscribedClientCount();
+  TestUnsubscribeRemovesChannelAndStopsDelivery();
   TestWaitReturnsZeroImmediatelyWithoutReplicas();
   TestWaitReturnsConnectedReplicaCount();
   TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite();

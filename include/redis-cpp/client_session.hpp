@@ -5,6 +5,8 @@
 #include "redis-cpp/resp.hpp"
 #include "redis-cpp/socket.hpp"
 
+#include <unordered_set>
+
 namespace redis {
 
 class ClientSession {
@@ -21,7 +23,7 @@ class ClientSession {
   RespParser parser_;
   bool in_multi_ = false;
   std::vector<std::vector<std::string>> queued_commands_;
+  std::unordered_set<std::string> subscribed_channels_;
 };
 
 }  // namespace redis
-

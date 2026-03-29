@@ -37,6 +37,15 @@ bool TryParseReplicaAck(const std::vector<std::string>& args, int64_t& offset) {
          ToUpperAscii(args[1]) == "ACK" && ParseMilliseconds(args[2], offset);
 }
 
+std::string EncodeSubscribeResponse(const std::string& channel,
+                                    size_t subscribed_channel_count) {
+  std::string response = "*3\r\n";
+  response += "$9\r\nsubscribe\r\n";
+  response += "$" + std::to_string(channel.size()) + "\r\n" + channel + "\r\n";
+  response += ":" + std::to_string(subscribed_channel_count) + "\r\n";
+  return response;
+}
+
 }  // namespace
 
 ClientSession::ClientSession(Socket socket, CommandProcessor& command_processor,
@@ -87,6 +96,10 @@ void ClientSession::Run() {
       if (cmd == "MULTI") {
         in_multi_ = true;
         response = "+OK\r\n";
+      } else if (cmd == "SUBSCRIBE" && args.size() == 2) {
+        subscribed_channels_.insert(args[1]);
+        response =
+            EncodeSubscribeResponse(args[1], subscribed_channels_.size());
       } else if (cmd == "EXEC" && in_multi_) {
         in_multi_ = false;
         response = "*" + std::to_string(queued_commands_.size()) + "\r\n";

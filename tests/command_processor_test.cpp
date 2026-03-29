@@ -3,17 +3,21 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <thread>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <string>
 #include <vector>
 
+#include "redis-cpp/client_session.hpp"
 #include "redis-cpp/command_processor.hpp"
 #include "redis-cpp/replica_manager.hpp"
 #include "redis-cpp/rdb_loader.hpp"
+#include "redis-cpp/unique_fd.hpp"
 
 namespace {
 
+using redis::ClientSession;
 using redis::CommandProcessor;
 using redis::Database;
 using redis::ReplicaManager;
@@ -71,6 +75,63 @@ void TestSubscribeReturnsConfirmationFrame() {
   Expect(RespWriter::Write(*result) ==
              "*3\r\n$9\r\nsubscribe\r\n$3\r\nfoo\r\n:1\r\n",
          "SUBSCRIBE foo should encode the expected confirmation array");
+}
+
+void TestSubscribeTracksChannelsPerClientSession() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  auto run_client = [&](const std::vector<std::string>& commands) {
+    int fds[2];
+    const int socket_pair_status = socketpair(AF_UNIX, SOCK_STREAM, 0, fds);
+    Expect(socket_pair_status == 0, "socketpair should succeed");
+
+    ClientSession session(redis::Socket(redis::UniqueFd(fds[0])), processor,
+                          nullptr);
+    std::thread session_thread([&]() { session.Run(); });
+
+    std::vector<std::string> responses;
+    char buffer[256];
+    for (const std::string& command : commands) {
+      const ssize_t sent = send(fds[1], command.data(), command.size(), 0);
+      Expect(sent == static_cast<ssize_t>(command.size()),
+             "test command should be written fully to the client socket");
+
+      const ssize_t received = recv(fds[1], buffer, sizeof(buffer), 0);
+      Expect(received > 0, "client session should send a subscribe response");
+      responses.emplace_back(buffer, buffer + received);
+    }
+
+    close(fds[1]);
+    session_thread.join();
+    return responses;
+  };
+
+  const auto first_client_responses = run_client({
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nfoo\r\n",
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nbar\r\n",
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nbar\r\n",
+  });
+  Expect(first_client_responses.size() == 3,
+         "first client should receive three subscribe responses");
+  Expect(first_client_responses[0] ==
+             "*3\r\n$9\r\nsubscribe\r\n$3\r\nfoo\r\n:1\r\n",
+         "first subscribe should report one subscribed channel");
+  Expect(first_client_responses[1] ==
+             "*3\r\n$9\r\nsubscribe\r\n$3\r\nbar\r\n:2\r\n",
+         "second distinct subscribe should report two subscribed channels");
+  Expect(first_client_responses[2] ==
+             "*3\r\n$9\r\nsubscribe\r\n$3\r\nbar\r\n:2\r\n",
+         "duplicate subscribe should keep the subscribed channel count");
+
+  const auto second_client_responses = run_client({
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nbaz\r\n",
+  });
+  Expect(second_client_responses.size() == 1,
+         "second client should receive one subscribe response");
+  Expect(second_client_responses[0] ==
+             "*3\r\n$9\r\nsubscribe\r\n$3\r\nbaz\r\n:1\r\n",
+         "subscribed channel counts should be maintained per client");
 }
 
 void TestWaitReturnsZeroImmediatelyWithoutReplicas() {
@@ -422,6 +483,7 @@ int main() {
   TestReplicaReplconfGetackReturnsAck();
   TestMasterReplconfStillReturnsOk();
   TestSubscribeReturnsConfirmationFrame();
+  TestSubscribeTracksChannelsPerClientSession();
   TestWaitReturnsZeroImmediatelyWithoutReplicas();
   TestWaitReturnsConnectedReplicaCount();
   TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite();

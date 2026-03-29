@@ -61,7 +61,8 @@ class MasterReader {
 
 RedisServer::RedisServer(ServerConfig config)
     : config_(config),
-      command_processor_(database_, !config_.replicaof.empty()) {}
+      command_processor_(database_, !config_.replicaof.empty(),
+                         &replica_manager_) {}
 
 Status RedisServer::Run() {
   if (!config_.replicaof.empty()) {

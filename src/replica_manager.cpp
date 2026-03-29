@@ -24,4 +24,9 @@ void ReplicaManager::PropagateToAll(const std::string& data) {
   }
 }
 
+size_t ReplicaManager::ReplicaCount() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return replica_fds_.size();
+}
+
 }  // namespace redis

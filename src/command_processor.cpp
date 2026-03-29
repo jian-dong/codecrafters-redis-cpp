@@ -59,8 +59,11 @@ std::string EncodeXreadResponse(
 
 }  // namespace
 
-CommandProcessor::CommandProcessor(Database& database, bool is_replica)
-    : database_(database), is_replica_(is_replica) {}
+CommandProcessor::CommandProcessor(Database& database, bool is_replica,
+                                   ReplicaManager* replica_manager)
+    : database_(database),
+      is_replica_(is_replica),
+      replica_manager_(replica_manager) {}
 
 std::string CommandErrorMessage(const CommandError& error) {
   switch (error.code) {
@@ -596,7 +599,12 @@ CommandResult CommandProcessor::HandleWait(
 
   (void)num_replicas;
   (void)timeout_milliseconds;
-  return RespInteger{0};
+
+  const int64_t replica_count =
+      replica_manager_ == nullptr
+          ? 0
+          : static_cast<int64_t>(replica_manager_->ReplicaCount());
+  return RespInteger{replica_count};
 }
 
 }  // namespace redis

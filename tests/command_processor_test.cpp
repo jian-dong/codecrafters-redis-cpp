@@ -1,14 +1,18 @@
 #include <cstdlib>
 #include <iostream>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <string>
 #include <vector>
 
 #include "redis-cpp/command_processor.hpp"
+#include "redis-cpp/replica_manager.hpp"
 
 namespace {
 
 using redis::CommandProcessor;
 using redis::Database;
+using redis::ReplicaManager;
 using redis::RespArray;
 using redis::RespInteger;
 using redis::RespSimpleString;
@@ -65,11 +69,38 @@ void TestWaitReturnsZeroImmediatelyWithoutReplicas() {
          "WAIT 0 60000 should encode as :0");
 }
 
+void TestWaitReturnsConnectedReplicaCount() {
+  Database database;
+  ReplicaManager replica_manager;
+  CommandProcessor processor(database, false, &replica_manager);
+
+  int replica_sockets[2];
+  const int socket_pair_status =
+      socketpair(AF_UNIX, SOCK_STREAM, 0, replica_sockets);
+  Expect(socket_pair_status == 0, "socketpair should succeed");
+
+  replica_manager.AddReplica(replica_sockets[0]);
+  replica_manager.AddReplica(replica_sockets[1]);
+
+  redis::CommandResult result = processor.Execute({"WAIT", "9", "500"});
+  Expect(result.has_value(), "WAIT 9 500 should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "WAIT 9 500 should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 2,
+         "WAIT should return the connected replica count");
+  Expect(RespWriter::Write(*result) == ":2\r\n",
+         "WAIT should encode the connected replica count as a RESP integer");
+
+  close(replica_sockets[0]);
+  close(replica_sockets[1]);
+}
+
 }  // namespace
 
 int main() {
   TestReplicaReplconfGetackReturnsAck();
   TestMasterReplconfStillReturnsOk();
   TestWaitReturnsZeroImmediatelyWithoutReplicas();
+  TestWaitReturnsConnectedReplicaCount();
   return 0;
 }

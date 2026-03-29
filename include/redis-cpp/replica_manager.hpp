@@ -10,6 +10,7 @@ class ReplicaManager {
  public:
   void AddReplica(int fd);
   void PropagateToAll(const std::string& data);
+  size_t ReplicaCount();
 
  private:
   std::mutex mutex_;

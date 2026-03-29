@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "redis-cpp/database.hpp"
+#include "redis-cpp/replica_manager.hpp"
 #include "redis-cpp/resp.hpp"
 #include "tl/expected.hpp"
 
@@ -32,7 +33,8 @@ std::string CommandErrorMessage(const CommandError& error);
 
 class CommandProcessor {
  public:
-  explicit CommandProcessor(Database& database, bool is_replica = false);
+  explicit CommandProcessor(Database& database, bool is_replica = false,
+                            ReplicaManager* replica_manager = nullptr);
 
   CommandResult Execute(const std::vector<std::string>& args);
 
@@ -58,6 +60,7 @@ class CommandProcessor {
 
   Database& database_;
   bool is_replica_ = false;
+  ReplicaManager* replica_manager_ = nullptr;
 };
 
 }  // namespace redis

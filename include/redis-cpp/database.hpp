@@ -19,6 +19,7 @@ enum class ValueType {
   kString,
   kList,
   kStream,
+  kSortedSet,
 };
 
 std::string ValueTypeName(ValueType type);
@@ -99,6 +100,11 @@ class Database {
     int64_t value = 0;
   };
 
+  struct ZAddResult {
+    bool wrong_type = false;
+    int64_t added = 0;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -126,6 +132,8 @@ class Database {
       const std::vector<std::pair<std::string, std::string>>& streams,
       std::chrono::steady_clock::duration timeout);
   IncrResult Incr(const std::string& key);
+  ZAddResult ZAdd(const std::string& key, double score,
+                  const std::string& member);
 
  private:
   struct StringValue {
@@ -150,8 +158,17 @@ class Database {
     std::vector<StreamEntry> entries;
   };
 
+  struct SortedSetEntry {
+    std::string member;
+    double score = 0.0;
+  };
+
+  struct SortedSetValue {
+    std::vector<SortedSetEntry> entries;
+  };
+
   struct Entry {
-    std::variant<StringValue, ListValue, StreamValue> value;
+    std::variant<StringValue, ListValue, StreamValue, SortedSetValue> value;
     std::optional<std::chrono::steady_clock::time_point> expires_at;
   };
 

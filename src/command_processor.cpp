@@ -1,8 +1,10 @@
 #include "redis-cpp/command_processor.hpp"
 
 #include <chrono>
+#include <cerrno>
 #include <cstdint>
 #include <optional>
+#include <cstdlib>
 #include <utility>
 #include <vector>
 
@@ -55,6 +57,18 @@ std::string EncodeXreadResponse(
     encoded += EncodeStreamRange(entries);
   }
   return encoded;
+}
+
+bool ParseDouble(std::string_view data, double& value) {
+  if (data.empty()) {
+    return false;
+  }
+
+  errno = 0;
+  char* parse_end = nullptr;
+  const std::string text(data);
+  value = std::strtod(text.c_str(), &parse_end);
+  return parse_end == text.c_str() + text.size() && errno != ERANGE;
 }
 
 }  // namespace
@@ -121,6 +135,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "TYPE") {
     return HandleType(args);
+  }
+  if (command == "ZADD") {
+    return HandleZadd(args);
   }
   if (command == "XADD") {
     return HandleXadd(args);
@@ -291,6 +308,28 @@ CommandResult CommandProcessor::HandleType(
   }
 
   return RespSimpleString{ValueTypeName(database_.TypeOf(args[1]))};
+}
+
+CommandResult CommandProcessor::HandleZadd(
+    const std::vector<std::string>& args) {
+  if (args.size() != 4) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "zadd"});
+  }
+
+  double score = 0.0;
+  if (!ParseDouble(args[2], score)) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kSyntaxError, .command = "zadd"});
+  }
+
+  const Database::ZAddResult result = database_.ZAdd(args[1], score, args[3]);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "zadd"});
+  }
+
+  return RespInteger{result.added};
 }
 
 CommandResult CommandProcessor::HandleXadd(

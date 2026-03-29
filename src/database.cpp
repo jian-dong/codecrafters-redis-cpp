@@ -16,6 +16,8 @@ std::string ValueTypeName(ValueType type) {
       return "list";
     case ValueType::kStream:
       return "stream";
+    case ValueType::kSortedSet:
+      return "zset";
     case ValueType::kNone:
     default:
       return "none";
@@ -606,6 +608,52 @@ Database::IncrResult Database::Incr(const std::string& key) {
   return {.value = new_value};
 }
 
+Database::ZAddResult Database::ZAdd(const std::string& key, double score,
+                                    const std::string& member) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    auto [it, _] = store_.emplace(key, Entry{
+                                           .value = SortedSetValue{},
+                                           .expires_at = std::nullopt,
+                                       });
+    entry = &it->second;
+  }
+
+  if (!std::holds_alternative<SortedSetValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  entry->expires_at.reset();
+  std::vector<SortedSetEntry>& entries =
+      std::get<SortedSetValue>(entry->value).entries;
+  for (SortedSetEntry& existing : entries) {
+    if (existing.member != member) {
+      continue;
+    }
+
+    existing.score = score;
+    std::sort(entries.begin(), entries.end(),
+              [](const SortedSetEntry& lhs, const SortedSetEntry& rhs) {
+                if (lhs.score != rhs.score) {
+                  return lhs.score < rhs.score;
+                }
+                return lhs.member < rhs.member;
+              });
+    return {.added = 0};
+  }
+
+  entries.push_back(SortedSetEntry{.member = member, .score = score});
+  std::sort(entries.begin(), entries.end(),
+            [](const SortedSetEntry& lhs, const SortedSetEntry& rhs) {
+              if (lhs.score != rhs.score) {
+                return lhs.score < rhs.score;
+              }
+              return lhs.member < rhs.member;
+            });
+  return {.added = 1};
+}
+
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   const auto found = store_.find(key);
   if (found == store_.end()) {
@@ -714,7 +762,10 @@ ValueType Database::EntryValueType(const Entry& entry) {
   if (std::holds_alternative<ListValue>(entry.value)) {
     return ValueType::kList;
   }
-  return ValueType::kStream;
+  if (std::holds_alternative<StreamValue>(entry.value)) {
+    return ValueType::kStream;
+  }
+  return ValueType::kSortedSet;
 }
 
 bool Database::IsExpired(const Entry& entry,

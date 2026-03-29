@@ -81,6 +81,21 @@ void TestSubscribeReturnsConfirmationFrame() {
          "SUBSCRIBE foo should encode the expected confirmation array");
 }
 
+void TestZaddCreatesSortedSetAndReturnsAddedCount() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result =
+      processor.Execute({"ZADD", "zset_key", "10.0", "zset_member"});
+  Expect(result.has_value(), "ZADD should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "ZADD should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 1,
+         "ZADD should report one added member for a new sorted set");
+  Expect(RespWriter::Write(*result) == ":1\r\n",
+         "ZADD should encode the added-member count as a RESP integer");
+}
+
 void TestSubscribeTracksChannelsPerClientSession() {
   Database database;
   CommandProcessor processor(database, false);
@@ -797,6 +812,7 @@ int main() {
   TestReplicaReplconfGetackReturnsAck();
   TestMasterReplconfStillReturnsOk();
   TestSubscribeReturnsConfirmationFrame();
+  TestZaddCreatesSortedSetAndReturnsAddedCount();
   TestSubscribeTracksChannelsPerClientSession();
   TestSubscribedModeRejectsDisallowedCommands();
   TestSubscribedModePingUsesPubsubResponse();

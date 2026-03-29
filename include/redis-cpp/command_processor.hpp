@@ -48,6 +48,7 @@ class CommandProcessor {
   CommandResult HandleKeys(const std::vector<std::string>& args);
   CommandResult HandleSubscribe(const std::vector<std::string>& args);
   CommandResult HandleType(const std::vector<std::string>& args);
+  CommandResult HandleZadd(const std::vector<std::string>& args);
   CommandResult HandleXadd(const std::vector<std::string>& args);
   CommandResult HandleXrange(const std::vector<std::string>& args);
   CommandResult HandleXread(const std::vector<std::string>& args);

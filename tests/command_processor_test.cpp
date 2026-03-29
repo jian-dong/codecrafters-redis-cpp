@@ -18,6 +18,7 @@ using redis::RespArray;
 using redis::RespInteger;
 using redis::RespSimpleString;
 using redis::RespWriter;
+using redis::ServerConfig;
 
 void Expect(bool condition, const std::string& message) {
   if (!condition) {
@@ -145,6 +146,47 @@ void TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite() {
   close(replica_sockets[1]);
 }
 
+void TestConfigGetDirReturnsConfiguredDirectory() {
+  Database database;
+  ServerConfig config;
+  config.dir = "/tmp/redis-files";
+  CommandProcessor processor(database, false, nullptr, &config);
+
+  redis::CommandResult result = processor.Execute({"CONFIG", "GET", "dir"});
+  Expect(result.has_value(), "CONFIG GET dir should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "CONFIG GET dir should return a RESP array");
+
+  const auto& response = std::get<RespArray>(*result);
+  Expect(response.values ==
+             std::vector<std::string>({"dir", "/tmp/redis-files"}),
+         "CONFIG GET dir should return the configured dir");
+  Expect(RespWriter::Write(*result) ==
+             "*2\r\n$3\r\ndir\r\n$16\r\n/tmp/redis-files\r\n",
+         "CONFIG GET dir should encode as the expected RESP array");
+}
+
+void TestConfigGetDbfilenameReturnsConfiguredFilename() {
+  Database database;
+  ServerConfig config;
+  config.dbfilename = "dump.rdb";
+  CommandProcessor processor(database, false, nullptr, &config);
+
+  redis::CommandResult result =
+      processor.Execute({"CONFIG", "GET", "dbfilename"});
+  Expect(result.has_value(), "CONFIG GET dbfilename should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "CONFIG GET dbfilename should return a RESP array");
+
+  const auto& response = std::get<RespArray>(*result);
+  Expect(response.values ==
+             std::vector<std::string>({"dbfilename", "dump.rdb"}),
+         "CONFIG GET dbfilename should return the configured filename");
+  Expect(RespWriter::Write(*result) ==
+             "*2\r\n$10\r\ndbfilename\r\n$8\r\ndump.rdb\r\n",
+         "CONFIG GET dbfilename should encode as the expected RESP array");
+}
+
 }  // namespace
 
 int main() {
@@ -153,5 +195,7 @@ int main() {
   TestWaitReturnsZeroImmediatelyWithoutReplicas();
   TestWaitReturnsConnectedReplicaCount();
   TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite();
+  TestConfigGetDirReturnsConfiguredDirectory();
+  TestConfigGetDbfilenameReturnsConfiguredFilename();
   return 0;
 }

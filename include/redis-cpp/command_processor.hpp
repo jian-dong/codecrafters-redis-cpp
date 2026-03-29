@@ -6,6 +6,7 @@
 #include "redis-cpp/database.hpp"
 #include "redis-cpp/replica_manager.hpp"
 #include "redis-cpp/resp.hpp"
+#include "redis-cpp/server_config.hpp"
 #include "tl/expected.hpp"
 
 namespace redis {
@@ -34,7 +35,8 @@ std::string CommandErrorMessage(const CommandError& error);
 class CommandProcessor {
  public:
   explicit CommandProcessor(Database& database, bool is_replica = false,
-                            ReplicaManager* replica_manager = nullptr);
+                            ReplicaManager* replica_manager = nullptr,
+                            const ServerConfig* server_config = nullptr);
 
   CommandResult Execute(const std::vector<std::string>& args);
 
@@ -54,6 +56,7 @@ class CommandProcessor {
   CommandResult HandleLpop(const std::vector<std::string>& args);
   CommandResult HandleBlpop(const std::vector<std::string>& args);
   CommandResult HandleIncr(const std::vector<std::string>& args);
+  CommandResult HandleConfig(const std::vector<std::string>& args);
   CommandResult HandleInfo(const std::vector<std::string>& args);
   CommandResult HandleReplconf(const std::vector<std::string>& args);
   CommandResult HandleWait(const std::vector<std::string>& args);
@@ -61,6 +64,7 @@ class CommandProcessor {
   Database& database_;
   bool is_replica_ = false;
   ReplicaManager* replica_manager_ = nullptr;
+  const ServerConfig* server_config_ = nullptr;
 };
 
 }  // namespace redis

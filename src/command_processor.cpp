@@ -60,10 +60,12 @@ std::string EncodeXreadResponse(
 }  // namespace
 
 CommandProcessor::CommandProcessor(Database& database, bool is_replica,
-                                   ReplicaManager* replica_manager)
+                                   ReplicaManager* replica_manager,
+                                   const ServerConfig* server_config)
     : database_(database),
       is_replica_(is_replica),
-      replica_manager_(replica_manager) {}
+      replica_manager_(replica_manager),
+      server_config_(server_config) {}
 
 std::string CommandErrorMessage(const CommandError& error) {
   switch (error.code) {
@@ -143,6 +145,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "INCR") {
     return HandleIncr(args);
+  }
+  if (command == "CONFIG") {
+    return HandleConfig(args);
   }
   if (command == "INFO") {
     return HandleInfo(args);
@@ -569,6 +574,28 @@ CommandResult CommandProcessor::HandleInfo(
   }
 
   return RespBulkString{""};
+}
+
+CommandResult CommandProcessor::HandleConfig(
+    const std::vector<std::string>& args) {
+  if (args.size() != 3 || ToUpperAscii(args[1]) != "GET") {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity,
+                     .command = "config"});
+  }
+
+  const std::string parameter = ToUpperAscii(args[2]);
+  if (server_config_ == nullptr) {
+    return RespArray{{}};
+  }
+  if (parameter == "DIR") {
+    return RespArray{{"dir", server_config_->dir}};
+  }
+  if (parameter == "DBFILENAME") {
+    return RespArray{{"dbfilename", server_config_->dbfilename}};
+  }
+
+  return RespArray{{}};
 }
 
 CommandResult CommandProcessor::HandleReplconf(

@@ -14,6 +14,9 @@ Result<ServerConfig> ConfigParser::Parse(int argc, char** argv) const {
       ->capture_default_str()
       ->check(CLI::PositiveNumber);
   app.add_option("--replicaof", config.replicaof, "master host and port");
+  app.add_option("--dir", config.dir, "directory where the RDB file is stored");
+  app.add_option("--dbfilename", config.dbfilename,
+                 "name of the RDB file");
 
   try {
     app.parse(argc, argv);

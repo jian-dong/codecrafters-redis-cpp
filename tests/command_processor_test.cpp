@@ -335,6 +335,74 @@ void TestRdbLoaderImportsMultipleStringValues() {
   std::filesystem::remove(config.dir);
 }
 
+void AppendLittleEndian64(std::vector<unsigned char>& bytes, uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) {
+    bytes.push_back(static_cast<unsigned char>((value >> shift) & 0xFF));
+  }
+}
+
+void TestRdbLoaderRespectsExpiredAndLiveKeys() {
+  Database database;
+  ServerConfig config;
+
+  char directory_template[] = "/tmp/redis-rdb-expiry-testXXXXXX";
+  char* directory = mkdtemp(directory_template);
+  Expect(directory != nullptr, "mkdtemp should succeed");
+
+  config.dir = directory;
+  config.dbfilename = "dump.rdb";
+  const std::filesystem::path file_path =
+      std::filesystem::path(config.dir) / config.dbfilename;
+
+  const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now());
+  const uint64_t now_ms =
+      static_cast<uint64_t>(now.time_since_epoch().count());
+  const uint64_t expired_ms = now_ms - 60000;
+  const uint64_t live_ms = now_ms + 60000;
+
+  std::vector<unsigned char> rdb_bytes = {
+      'R',  'E',  'D',  'I',  'S',  '0',  '0',  '1',  '1',
+      0xFE, 0x00, 0xFB, 0x02, 0x01,
+      0xFC,
+  };
+  AppendLittleEndian64(rdb_bytes, expired_ms);
+  rdb_bytes.insert(rdb_bytes.end(),
+                   {0x00, 0x03, 'f', 'o', 'o', 0x03, 'o', 'l', 'd'});
+  rdb_bytes.push_back(0xFC);
+  AppendLittleEndian64(rdb_bytes, live_ms);
+  rdb_bytes.insert(rdb_bytes.end(),
+                   {0x00, 0x03, 'b', 'a', 'r', 0x03, 'n', 'e', 'w',
+                    0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00});
+
+  {
+    std::ofstream output(file_path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(rdb_bytes.data()),
+                 static_cast<std::streamsize>(rdb_bytes.size()));
+  }
+
+  LoadDatabaseFromRdb(config, database);
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult expired_result = processor.Execute({"GET", "foo"});
+  Expect(expired_result.has_value(), "GET foo should succeed after loading RDB");
+  Expect(std::holds_alternative<redis::RespNullBulk>(*expired_result),
+         "GET foo should return a null bulk string for expired data");
+  Expect(RespWriter::Write(*expired_result) == "$-1\r\n",
+         "Expired keys loaded from RDB should encode as null bulk strings");
+
+  redis::CommandResult live_result = processor.Execute({"GET", "bar"});
+  Expect(live_result.has_value(), "GET bar should succeed after loading RDB");
+  Expect(std::holds_alternative<redis::RespBulkString>(*live_result),
+         "GET bar should return a RESP bulk string for live data");
+  Expect(std::get<redis::RespBulkString>(*live_result).value == "new",
+         "GET bar should return the non-expired RDB value");
+
+  std::filesystem::remove(file_path);
+  std::filesystem::remove(config.dir);
+}
+
 }  // namespace
 
 int main() {
@@ -349,5 +417,6 @@ int main() {
   TestRdbLoaderImportsSingleStringKey();
   TestRdbLoaderMakesLoadedValueAvailableToGet();
   TestRdbLoaderImportsMultipleStringValues();
+  TestRdbLoaderRespectsExpiredAndLiveKeys();
   return 0;
 }

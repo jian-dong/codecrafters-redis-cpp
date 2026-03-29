@@ -190,7 +190,8 @@ void RedisServer::ProcessReplicatedCommands() {
 
 void RedisServer::ServeClient(Socket socket) {
   std::cout << "Client connected\n";
-  ClientSession session(std::move(socket), command_processor_, &replica_manager_);
+  ClientSession session(std::move(socket), command_processor_, &replica_manager_,
+                        &pubsub_manager_);
   session.Run();
 }
 

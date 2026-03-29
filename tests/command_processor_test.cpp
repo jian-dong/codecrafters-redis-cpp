@@ -3,6 +3,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <thread>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -11,6 +12,7 @@
 
 #include "redis-cpp/client_session.hpp"
 #include "redis-cpp/command_processor.hpp"
+#include "redis-cpp/pubsub_manager.hpp"
 #include "redis-cpp/replica_manager.hpp"
 #include "redis-cpp/rdb_loader.hpp"
 #include "redis-cpp/unique_fd.hpp"
@@ -20,6 +22,7 @@ namespace {
 using redis::ClientSession;
 using redis::CommandProcessor;
 using redis::Database;
+using redis::PubSubManager;
 using redis::ReplicaManager;
 using redis::RespArray;
 using redis::RespInteger;
@@ -230,6 +233,87 @@ void TestSubscribedModePingUsesPubsubResponse() {
          "regular client should receive one response");
   Expect(regular_responses[0] == "+PONG\r\n",
          "PING outside subscribed mode should keep the normal response");
+}
+
+void TestPublishReturnsSubscribedClientCount() {
+  Database database;
+  CommandProcessor processor(database, false);
+  PubSubManager pubsub_manager;
+
+  auto start_client = [&](const std::vector<std::string>& initial_commands) {
+    int fds[2];
+    const int socket_pair_status = socketpair(AF_UNIX, SOCK_STREAM, 0, fds);
+    Expect(socket_pair_status == 0, "socketpair should succeed");
+
+    auto session = std::make_unique<ClientSession>(
+        redis::Socket(redis::UniqueFd(fds[0])), processor, nullptr,
+        &pubsub_manager);
+    std::thread session_thread([session = session.get()]() { session->Run(); });
+
+    char buffer[256];
+    for (const std::string& command : initial_commands) {
+      Expect(send(fds[1], command.data(), command.size(), 0) ==
+                 static_cast<ssize_t>(command.size()),
+             "initial client command should be written fully");
+      const ssize_t received = recv(fds[1], buffer, sizeof(buffer), 0);
+      Expect(received > 0, "initial client command should receive a response");
+    }
+
+    struct RunningClient {
+      int fd = -1;
+      std::unique_ptr<ClientSession> session;
+      std::thread thread;
+    };
+
+    return RunningClient{
+        .fd = fds[1],
+        .session = std::move(session),
+        .thread = std::move(session_thread),
+    };
+  };
+
+  auto subscriber_foo = start_client({
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nfoo\r\n",
+  });
+  auto subscriber_bar_one = start_client({
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nbar\r\n",
+  });
+  auto subscriber_bar_two = start_client({
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nbar\r\n",
+  });
+  auto publisher = start_client({});
+
+  char buffer[256];
+
+  const std::string publish_bar =
+      "*3\r\n$7\r\nPUBLISH\r\n$3\r\nbar\r\n$3\r\nmsg\r\n";
+  Expect(send(publisher.fd, publish_bar.data(), publish_bar.size(), 0) ==
+             static_cast<ssize_t>(publish_bar.size()),
+         "PUBLISH bar should be written fully");
+  ssize_t received = recv(publisher.fd, buffer, sizeof(buffer), 0);
+  Expect(received > 0, "PUBLISH bar should receive a response");
+  Expect(std::string(buffer, buffer + received) == ":2\r\n",
+         "PUBLISH bar should report two subscribed clients");
+
+  const std::string publish_foo =
+      "*3\r\n$7\r\nPUBLISH\r\n$3\r\nfoo\r\n$3\r\nmsg\r\n";
+  Expect(send(publisher.fd, publish_foo.data(), publish_foo.size(), 0) ==
+             static_cast<ssize_t>(publish_foo.size()),
+         "PUBLISH foo should be written fully");
+  received = recv(publisher.fd, buffer, sizeof(buffer), 0);
+  Expect(received > 0, "PUBLISH foo should receive a response");
+  Expect(std::string(buffer, buffer + received) == ":1\r\n",
+         "PUBLISH foo should report one subscribed client");
+
+  auto stop_client = [](auto& client) {
+    close(client.fd);
+    client.thread.join();
+  };
+
+  stop_client(subscriber_foo);
+  stop_client(subscriber_bar_one);
+  stop_client(subscriber_bar_two);
+  stop_client(publisher);
 }
 
 void TestWaitReturnsZeroImmediatelyWithoutReplicas() {
@@ -584,6 +668,7 @@ int main() {
   TestSubscribeTracksChannelsPerClientSession();
   TestSubscribedModeRejectsDisallowedCommands();
   TestSubscribedModePingUsesPubsubResponse();
+  TestPublishReturnsSubscribedClientCount();
   TestWaitReturnsZeroImmediatelyWithoutReplicas();
   TestWaitReturnsConnectedReplicaCount();
   TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite();

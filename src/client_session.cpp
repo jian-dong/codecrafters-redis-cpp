@@ -88,10 +88,22 @@ std::string EncodeSubscribedModePingResponse() {
 }  // namespace
 
 ClientSession::ClientSession(Socket socket, CommandProcessor& command_processor,
-                             ReplicaManager* replica_manager)
+                             ReplicaManager* replica_manager,
+                             PubSubManager* pubsub_manager)
     : socket_(std::move(socket)),
       command_processor_(command_processor),
-      replica_manager_(replica_manager) {}
+      replica_manager_(replica_manager),
+      pubsub_manager_(pubsub_manager) {}
+
+ClientSession::~ClientSession() {
+  if (pubsub_manager_ == nullptr) {
+    return;
+  }
+
+  for (const std::string& channel : subscribed_channels_) {
+    pubsub_manager_->Unsubscribe(socket_.Get(), channel);
+  }
+}
 
 void ClientSession::Run() {
   char buffer[kReadBufferSize];
@@ -150,11 +162,17 @@ void ClientSession::Run() {
       if (cmd == "MULTI") {
         in_multi_ = true;
         response = "+OK\r\n";
+      } else if (cmd == "PUBLISH" && args.size() == 3 && pubsub_manager_ != nullptr) {
+        response =
+            RespWriter::Write(RespInteger{pubsub_manager_->SubscriberCount(args[1])});
       } else if (cmd == "PING" &&
                  SubscriptionCount(subscribed_channels_, subscribed_patterns_) > 0) {
         response = EncodeSubscribedModePingResponse();
       } else if (cmd == "SUBSCRIBE" && args.size() == 2) {
-        subscribed_channels_.insert(args[1]);
+        const auto [_, inserted] = subscribed_channels_.insert(args[1]);
+        if (inserted && pubsub_manager_ != nullptr) {
+          pubsub_manager_->Subscribe(socket_.Get(), args[1]);
+        }
         response = EncodeSubscribeResponse(
             args[1],
             SubscriptionCount(subscribed_channels_, subscribed_patterns_));
@@ -182,7 +200,10 @@ void ClientSession::Run() {
 
         for (const auto& target : targets) {
           if (target.has_value()) {
-            subscribed_channels_.erase(*target);
+            const size_t erased = subscribed_channels_.erase(*target);
+            if (erased > 0 && pubsub_manager_ != nullptr) {
+              pubsub_manager_->Unsubscribe(socket_.Get(), *target);
+            }
           }
           response += EncodeUnsubscribeFrame(
               "unsubscribe", target,
@@ -214,6 +235,11 @@ void ClientSession::Run() {
               SubscriptionCount(subscribed_channels_, subscribed_patterns_));
         }
       } else if (cmd == "RESET") {
+        if (pubsub_manager_ != nullptr) {
+          for (const std::string& channel : subscribed_channels_) {
+            pubsub_manager_->Unsubscribe(socket_.Get(), channel);
+          }
+        }
         subscribed_channels_.clear();
         subscribed_patterns_.clear();
         response = "+RESET\r\n";

@@ -247,6 +247,47 @@ void TestRdbLoaderImportsSingleStringKey() {
   std::filesystem::remove(config.dir);
 }
 
+void TestRdbLoaderMakesLoadedValueAvailableToGet() {
+  Database database;
+  ServerConfig config;
+
+  char directory_template[] = "/tmp/redis-rdb-get-testXXXXXX";
+  char* directory = mkdtemp(directory_template);
+  Expect(directory != nullptr, "mkdtemp should succeed");
+
+  config.dir = directory;
+  config.dbfilename = "dump.rdb";
+  const std::filesystem::path file_path =
+      std::filesystem::path(config.dir) / config.dbfilename;
+
+  const std::vector<unsigned char> rdb_bytes = {
+      'R',  'E',  'D',  'I',  'S',  '0',  '0',  '1',  '1',
+      0xFE, 0x00, 0xFB, 0x01, 0x00, 0x00, 0x03, 'f',  'o',
+      'o',  0x03, 'b',  'a',  'r',  0xFF, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00,
+  };
+  {
+    std::ofstream output(file_path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(rdb_bytes.data()),
+                 static_cast<std::streamsize>(rdb_bytes.size()));
+  }
+
+  LoadDatabaseFromRdb(config, database);
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result = processor.Execute({"GET", "foo"});
+  Expect(result.has_value(), "GET foo should succeed after loading RDB");
+  Expect(std::holds_alternative<redis::RespBulkString>(*result),
+         "GET foo should return a RESP bulk string after loading RDB");
+  Expect(std::get<redis::RespBulkString>(*result).value == "bar",
+         "GET foo should return the loaded value from the RDB file");
+  Expect(RespWriter::Write(*result) == "$3\r\nbar\r\n",
+         "GET foo should encode the loaded value as a RESP bulk string");
+
+  std::filesystem::remove(file_path);
+  std::filesystem::remove(config.dir);
+}
+
 }  // namespace
 
 int main() {
@@ -259,5 +300,6 @@ int main() {
   TestConfigGetDbfilenameReturnsConfiguredFilename();
   TestKeysReturnsStoredKeys();
   TestRdbLoaderImportsSingleStringKey();
+  TestRdbLoaderMakesLoadedValueAvailableToGet();
   return 0;
 }

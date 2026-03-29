@@ -164,7 +164,7 @@ void ClientSession::Run() {
         response = "+OK\r\n";
       } else if (cmd == "PUBLISH" && args.size() == 3 && pubsub_manager_ != nullptr) {
         response =
-            RespWriter::Write(RespInteger{pubsub_manager_->SubscriberCount(args[1])});
+            RespWriter::Write(RespInteger{pubsub_manager_->Publish(args[1], args[2])});
       } else if (cmd == "PING" &&
                  SubscriptionCount(subscribed_channels_, subscribed_patterns_) > 0) {
         response = EncodeSubscribedModePingResponse();

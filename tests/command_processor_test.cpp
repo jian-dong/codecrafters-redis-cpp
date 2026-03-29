@@ -3,6 +3,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <cerrno>
 #include <memory>
 #include <thread>
 #include <sys/socket.h>
@@ -295,6 +296,23 @@ void TestPublishReturnsSubscribedClientCount() {
   Expect(std::string(buffer, buffer + received) == ":2\r\n",
          "PUBLISH bar should report two subscribed clients");
 
+  received = recv(subscriber_bar_one.fd, buffer, sizeof(buffer), 0);
+  Expect(received > 0, "first bar subscriber should receive the published message");
+  Expect(std::string(buffer, buffer + received) ==
+             "*3\r\n$7\r\nmessage\r\n$3\r\nbar\r\n$3\r\nmsg\r\n",
+         "first bar subscriber should receive the bar message frame");
+
+  received = recv(subscriber_bar_two.fd, buffer, sizeof(buffer), 0);
+  Expect(received > 0, "second bar subscriber should receive the published message");
+  Expect(std::string(buffer, buffer + received) ==
+             "*3\r\n$7\r\nmessage\r\n$3\r\nbar\r\n$3\r\nmsg\r\n",
+         "second bar subscriber should receive the bar message frame");
+
+  errno = 0;
+  received = recv(subscriber_foo.fd, buffer, sizeof(buffer), MSG_DONTWAIT);
+  Expect(received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK),
+         "foo subscriber should not receive bar messages");
+
   const std::string publish_foo =
       "*3\r\n$7\r\nPUBLISH\r\n$3\r\nfoo\r\n$3\r\nmsg\r\n";
   Expect(send(publisher.fd, publish_foo.data(), publish_foo.size(), 0) ==
@@ -304,6 +322,12 @@ void TestPublishReturnsSubscribedClientCount() {
   Expect(received > 0, "PUBLISH foo should receive a response");
   Expect(std::string(buffer, buffer + received) == ":1\r\n",
          "PUBLISH foo should report one subscribed client");
+
+  received = recv(subscriber_foo.fd, buffer, sizeof(buffer), 0);
+  Expect(received > 0, "foo subscriber should receive the foo message");
+  Expect(std::string(buffer, buffer + received) ==
+             "*3\r\n$7\r\nmessage\r\n$3\r\nfoo\r\n$3\r\nmsg\r\n",
+         "foo subscriber should receive the foo message frame");
 
   auto stop_client = [](auto& client) {
     close(client.fd);

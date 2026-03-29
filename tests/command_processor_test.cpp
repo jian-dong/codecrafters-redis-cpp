@@ -60,6 +60,19 @@ void TestMasterReplconfStillReturnsOk() {
          "master REPLCONF GETACK should return OK");
 }
 
+void TestSubscribeReturnsConfirmationFrame() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result = processor.Execute({"SUBSCRIBE", "foo"});
+  Expect(result.has_value(), "SUBSCRIBE foo should succeed");
+  Expect(std::holds_alternative<redis::RespRaw>(*result),
+         "SUBSCRIBE foo should return a raw RESP frame");
+  Expect(RespWriter::Write(*result) ==
+             "*3\r\n$9\r\nsubscribe\r\n$3\r\nfoo\r\n:1\r\n",
+         "SUBSCRIBE foo should encode the expected confirmation array");
+}
+
 void TestWaitReturnsZeroImmediatelyWithoutReplicas() {
   Database database;
   CommandProcessor processor(database, false);
@@ -408,6 +421,7 @@ void TestRdbLoaderRespectsExpiredAndLiveKeys() {
 int main() {
   TestReplicaReplconfGetackReturnsAck();
   TestMasterReplconfStillReturnsOk();
+  TestSubscribeReturnsConfirmationFrame();
   TestWaitReturnsZeroImmediatelyWithoutReplicas();
   TestWaitReturnsConnectedReplicaCount();
   TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite();

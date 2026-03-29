@@ -116,6 +116,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "KEYS") {
     return HandleKeys(args);
   }
+  if (command == "SUBSCRIBE") {
+    return HandleSubscribe(args);
+  }
   if (command == "TYPE") {
     return HandleType(args);
   }
@@ -264,6 +267,20 @@ CommandResult CommandProcessor::HandleKeys(
   }
 
   return RespArray{database_.Keys()};
+}
+
+CommandResult CommandProcessor::HandleSubscribe(
+    const std::vector<std::string>& args) {
+  if (args.size() != 2) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "subscribe"});
+  }
+
+  std::string response = "*3\r\n";
+  response += "$9\r\nsubscribe\r\n";
+  response += "$" + std::to_string(args[1].size()) + "\r\n" + args[1] + "\r\n";
+  response += ":1\r\n";
+  return RespRaw{std::move(response)};
 }
 
 CommandResult CommandProcessor::HandleType(

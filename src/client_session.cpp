@@ -81,6 +81,10 @@ std::string EncodeUnsubscribeFrame(std::string_view kind,
   return response;
 }
 
+std::string EncodeSubscribedModePingResponse() {
+  return "*2\r\n$4\r\npong\r\n$0\r\n\r\n";
+}
+
 }  // namespace
 
 ClientSession::ClientSession(Socket socket, CommandProcessor& command_processor,
@@ -146,6 +150,9 @@ void ClientSession::Run() {
       if (cmd == "MULTI") {
         in_multi_ = true;
         response = "+OK\r\n";
+      } else if (cmd == "PING" &&
+                 SubscriptionCount(subscribed_channels_, subscribed_patterns_) > 0) {
+        response = EncodeSubscribedModePingResponse();
       } else if (cmd == "SUBSCRIBE" && args.size() == 2) {
         subscribed_channels_.insert(args[1]);
         response = EncodeSubscribeResponse(

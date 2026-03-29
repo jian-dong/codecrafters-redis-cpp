@@ -10,6 +10,7 @@ namespace {
 using redis::CommandProcessor;
 using redis::Database;
 using redis::RespArray;
+using redis::RespInteger;
 using redis::RespSimpleString;
 using redis::RespWriter;
 
@@ -50,10 +51,25 @@ void TestMasterReplconfStillReturnsOk() {
          "master REPLCONF GETACK should return OK");
 }
 
+void TestWaitReturnsZeroImmediatelyWithoutReplicas() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result = processor.Execute({"WAIT", "0", "60000"});
+  Expect(result.has_value(), "WAIT 0 60000 should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "WAIT 0 60000 should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 0,
+         "WAIT 0 60000 should return 0");
+  Expect(RespWriter::Write(*result) == ":0\r\n",
+         "WAIT 0 60000 should encode as :0");
+}
+
 }  // namespace
 
 int main() {
   TestReplicaReplconfGetackReturnsAck();
   TestMasterReplconfStillReturnsOk();
+  TestWaitReturnsZeroImmediatelyWithoutReplicas();
   return 0;
 }

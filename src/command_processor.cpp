@@ -147,6 +147,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "REPLCONF") {
     return HandleReplconf(args);
   }
+  if (command == "WAIT") {
+    return HandleWait(args);
+  }
   if (command == "PSYNC") {
     const std::string& rdb = GetEmptyRdb();
     std::string response =
@@ -573,6 +576,27 @@ CommandResult CommandProcessor::HandleReplconf(
   }
 
   return RespSimpleString{"OK"};
+}
+
+CommandResult CommandProcessor::HandleWait(
+    const std::vector<std::string>& args) {
+  if (args.size() != 3) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "wait"});
+  }
+
+  int64_t num_replicas = 0;
+  int64_t timeout_milliseconds = 0;
+  if (!ParseMilliseconds(args[1], num_replicas) ||
+      !ParseMilliseconds(args[2], timeout_milliseconds)) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kInvalidInteger,
+                     .command = "wait"});
+  }
+
+  (void)num_replicas;
+  (void)timeout_milliseconds;
+  return RespInteger{0};
 }
 
 }  // namespace redis

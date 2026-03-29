@@ -54,6 +54,7 @@ class CommandProcessor {
   CommandResult HandleIncr(const std::vector<std::string>& args);
   CommandResult HandleInfo(const std::vector<std::string>& args);
   CommandResult HandleReplconf(const std::vector<std::string>& args);
+  CommandResult HandleWait(const std::vector<std::string>& args);
 
   Database& database_;
   bool is_replica_ = false;

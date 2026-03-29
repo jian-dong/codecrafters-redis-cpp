@@ -37,12 +37,47 @@ bool TryParseReplicaAck(const std::vector<std::string>& args, int64_t& offset) {
          ToUpperAscii(args[1]) == "ACK" && ParseMilliseconds(args[2], offset);
 }
 
+size_t SubscriptionCount(const std::unordered_set<std::string>& channels,
+                         const std::unordered_set<std::string>& patterns) {
+  return channels.size() + patterns.size();
+}
+
+bool IsSubscribedModeAllowedCommand(const std::string& cmd) {
+  return cmd == "SUBSCRIBE" || cmd == "UNSUBSCRIBE" || cmd == "PSUBSCRIBE" ||
+         cmd == "PUNSUBSCRIBE" || cmd == "PING" || cmd == "QUIT" ||
+         cmd == "RESET";
+}
+
 std::string EncodeSubscribeResponse(const std::string& channel,
                                     size_t subscribed_channel_count) {
   std::string response = "*3\r\n";
   response += "$9\r\nsubscribe\r\n";
   response += "$" + std::to_string(channel.size()) + "\r\n" + channel + "\r\n";
   response += ":" + std::to_string(subscribed_channel_count) + "\r\n";
+  return response;
+}
+
+std::string EncodePsubscribeResponse(const std::string& pattern,
+                                     size_t subscribed_count) {
+  std::string response = "*3\r\n";
+  response += "$10\r\npsubscribe\r\n";
+  response += "$" + std::to_string(pattern.size()) + "\r\n" + pattern + "\r\n";
+  response += ":" + std::to_string(subscribed_count) + "\r\n";
+  return response;
+}
+
+std::string EncodeUnsubscribeFrame(std::string_view kind,
+                                   const std::optional<std::string>& item,
+                                   size_t subscribed_count) {
+  std::string response = "*3\r\n";
+  response += "$" + std::to_string(kind.size()) + "\r\n" + std::string(kind) +
+              "\r\n";
+  if (item.has_value()) {
+    response += "$" + std::to_string(item->size()) + "\r\n" + *item + "\r\n";
+  } else {
+    response += "$-1\r\n";
+  }
+  response += ":" + std::to_string(subscribed_count) + "\r\n";
   return response;
 }
 
@@ -92,14 +127,96 @@ void ClientSession::Run() {
         continue;
       }
 
+      if (SubscriptionCount(subscribed_channels_, subscribed_patterns_) > 0 &&
+          !IsSubscribedModeAllowedCommand(cmd)) {
+        const std::string raw_command = args.empty() ? "" : ToUpperAscii(args[0]);
+        const std::string response = RespWriter::Error(
+            "ERR Can't execute '" + raw_command + "' in subscribed mode");
+        Status send_status = socket_.SendAll(response);
+        if (!send_status) {
+          LogError(send_status.error());
+        }
+        if (!send_status) {
+          return;
+        }
+        continue;
+      }
+
       std::string response;
       if (cmd == "MULTI") {
         in_multi_ = true;
         response = "+OK\r\n";
       } else if (cmd == "SUBSCRIBE" && args.size() == 2) {
         subscribed_channels_.insert(args[1]);
-        response =
-            EncodeSubscribeResponse(args[1], subscribed_channels_.size());
+        response = EncodeSubscribeResponse(
+            args[1],
+            SubscriptionCount(subscribed_channels_, subscribed_patterns_));
+      } else if (cmd == "PSUBSCRIBE" && args.size() == 2) {
+        subscribed_patterns_.insert(args[1]);
+        response = EncodePsubscribeResponse(
+            args[1],
+            SubscriptionCount(subscribed_channels_, subscribed_patterns_));
+      } else if (cmd == "UNSUBSCRIBE" &&
+                 SubscriptionCount(subscribed_channels_, subscribed_patterns_) > 0) {
+        std::vector<std::optional<std::string>> targets;
+        if (args.size() > 1) {
+          targets.reserve(args.size() - 1);
+          for (size_t index = 1; index < args.size(); ++index) {
+            targets.push_back(args[index]);
+          }
+        } else if (!subscribed_channels_.empty()) {
+          targets.reserve(subscribed_channels_.size());
+          for (const std::string& channel : subscribed_channels_) {
+            targets.push_back(channel);
+          }
+        } else {
+          targets.push_back(std::nullopt);
+        }
+
+        for (const auto& target : targets) {
+          if (target.has_value()) {
+            subscribed_channels_.erase(*target);
+          }
+          response += EncodeUnsubscribeFrame(
+              "unsubscribe", target,
+              SubscriptionCount(subscribed_channels_, subscribed_patterns_));
+        }
+      } else if (cmd == "PUNSUBSCRIBE" &&
+                 SubscriptionCount(subscribed_channels_, subscribed_patterns_) > 0) {
+        std::vector<std::optional<std::string>> targets;
+        if (args.size() > 1) {
+          targets.reserve(args.size() - 1);
+          for (size_t index = 1; index < args.size(); ++index) {
+            targets.push_back(args[index]);
+          }
+        } else if (!subscribed_patterns_.empty()) {
+          targets.reserve(subscribed_patterns_.size());
+          for (const std::string& pattern : subscribed_patterns_) {
+            targets.push_back(pattern);
+          }
+        } else {
+          targets.push_back(std::nullopt);
+        }
+
+        for (const auto& target : targets) {
+          if (target.has_value()) {
+            subscribed_patterns_.erase(*target);
+          }
+          response += EncodeUnsubscribeFrame(
+              "punsubscribe", target,
+              SubscriptionCount(subscribed_channels_, subscribed_patterns_));
+        }
+      } else if (cmd == "RESET") {
+        subscribed_channels_.clear();
+        subscribed_patterns_.clear();
+        response = "+RESET\r\n";
+      } else if (cmd == "QUIT") {
+        response = "+OK\r\n";
+        Status send_status = socket_.SendAll(response);
+        if (!send_status) {
+          LogError(send_status.error());
+        }
+        return;
       } else if (cmd == "EXEC" && in_multi_) {
         in_multi_ = false;
         response = "*" + std::to_string(queued_commands_.size()) + "\r\n";

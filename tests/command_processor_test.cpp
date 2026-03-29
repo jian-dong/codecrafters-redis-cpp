@@ -134,6 +134,57 @@ void TestSubscribeTracksChannelsPerClientSession() {
          "subscribed channel counts should be maintained per client");
 }
 
+void TestSubscribedModeRejectsDisallowedCommands() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  int fds[2];
+  const int socket_pair_status = socketpair(AF_UNIX, SOCK_STREAM, 0, fds);
+  Expect(socket_pair_status == 0, "socketpair should succeed");
+
+  ClientSession session(redis::Socket(redis::UniqueFd(fds[0])), processor,
+                        nullptr);
+  std::thread session_thread([&]() { session.Run(); });
+
+  char buffer[256];
+
+  const std::string subscribe_foo =
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nfoo\r\n";
+  Expect(send(fds[1], subscribe_foo.data(), subscribe_foo.size(), 0) ==
+             static_cast<ssize_t>(subscribe_foo.size()),
+         "initial SUBSCRIBE should be written fully");
+  ssize_t received = recv(fds[1], buffer, sizeof(buffer), 0);
+  Expect(received > 0, "initial SUBSCRIBE should receive a response");
+  Expect(std::string(buffer, buffer + received) ==
+             "*3\r\n$9\r\nsubscribe\r\n$3\r\nfoo\r\n:1\r\n",
+         "initial SUBSCRIBE should enter subscribed mode");
+
+  const std::string echo_hey =
+      "*2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n";
+  Expect(send(fds[1], echo_hey.data(), echo_hey.size(), 0) ==
+             static_cast<ssize_t>(echo_hey.size()),
+         "disallowed command should be written fully");
+  received = recv(fds[1], buffer, sizeof(buffer), 0);
+  Expect(received > 0, "disallowed command should receive an error");
+  const std::string error_response(buffer, buffer + received);
+  Expect(error_response.starts_with("-ERR Can't execute 'ECHO'"),
+         "subscribed mode should reject non-pubsub commands");
+
+  const std::string subscribe_bar =
+      "*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nbar\r\n";
+  Expect(send(fds[1], subscribe_bar.data(), subscribe_bar.size(), 0) ==
+             static_cast<ssize_t>(subscribe_bar.size()),
+         "follow-up SUBSCRIBE should be written fully");
+  received = recv(fds[1], buffer, sizeof(buffer), 0);
+  Expect(received > 0, "follow-up SUBSCRIBE should receive a response");
+  Expect(std::string(buffer, buffer + received) ==
+             "*3\r\n$9\r\nsubscribe\r\n$3\r\nbar\r\n:2\r\n",
+         "SUBSCRIBE should still be allowed in subscribed mode");
+
+  close(fds[1]);
+  session_thread.join();
+}
+
 void TestWaitReturnsZeroImmediatelyWithoutReplicas() {
   Database database;
   CommandProcessor processor(database, false);
@@ -484,6 +535,7 @@ int main() {
   TestMasterReplconfStillReturnsOk();
   TestSubscribeReturnsConfirmationFrame();
   TestSubscribeTracksChannelsPerClientSession();
+  TestSubscribedModeRejectsDisallowedCommands();
   TestWaitReturnsZeroImmediatelyWithoutReplicas();
   TestWaitReturnsConnectedReplicaCount();
   TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite();

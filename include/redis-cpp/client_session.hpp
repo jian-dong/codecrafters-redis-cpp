@@ -24,6 +24,7 @@ class ClientSession {
   bool in_multi_ = false;
   std::vector<std::vector<std::string>> queued_commands_;
   std::unordered_set<std::string> subscribed_channels_;
+  std::unordered_set<std::string> subscribed_patterns_;
 };
 
 }  // namespace redis

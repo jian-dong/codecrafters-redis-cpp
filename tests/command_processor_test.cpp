@@ -288,6 +288,53 @@ void TestRdbLoaderMakesLoadedValueAvailableToGet() {
   std::filesystem::remove(config.dir);
 }
 
+void TestRdbLoaderImportsMultipleStringValues() {
+  Database database;
+  ServerConfig config;
+
+  char directory_template[] = "/tmp/redis-rdb-multi-testXXXXXX";
+  char* directory = mkdtemp(directory_template);
+  Expect(directory != nullptr, "mkdtemp should succeed");
+
+  config.dir = directory;
+  config.dbfilename = "dump.rdb";
+  const std::filesystem::path file_path =
+      std::filesystem::path(config.dir) / config.dbfilename;
+
+  const std::vector<unsigned char> rdb_bytes = {
+      'R',  'E',  'D',  'I',  'S',  '0',  '0',  '1',  '1',
+      0xFE, 0x00, 0xFB, 0x02, 0x00,
+      0x00, 0x03, 'f',  'o',  'o',  0x03, 'o',  'n',  'e',
+      0x00, 0x03, 'b',  'a',  'r',  0x03, 't',  'w',  'o',
+      0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  };
+  {
+    std::ofstream output(file_path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(rdb_bytes.data()),
+                 static_cast<std::streamsize>(rdb_bytes.size()));
+  }
+
+  LoadDatabaseFromRdb(config, database);
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult foo_result = processor.Execute({"GET", "foo"});
+  Expect(foo_result.has_value(), "GET foo should succeed after loading RDB");
+  Expect(std::holds_alternative<redis::RespBulkString>(*foo_result),
+         "GET foo should return a RESP bulk string");
+  Expect(std::get<redis::RespBulkString>(*foo_result).value == "one",
+         "GET foo should return the first loaded value");
+
+  redis::CommandResult bar_result = processor.Execute({"GET", "bar"});
+  Expect(bar_result.has_value(), "GET bar should succeed after loading RDB");
+  Expect(std::holds_alternative<redis::RespBulkString>(*bar_result),
+         "GET bar should return a RESP bulk string");
+  Expect(std::get<redis::RespBulkString>(*bar_result).value == "two",
+         "GET bar should return the second loaded value");
+
+  std::filesystem::remove(file_path);
+  std::filesystem::remove(config.dir);
+}
+
 }  // namespace
 
 int main() {
@@ -301,5 +348,6 @@ int main() {
   TestKeysReturnsStoredKeys();
   TestRdbLoaderImportsSingleStringKey();
   TestRdbLoaderMakesLoadedValueAvailableToGet();
+  TestRdbLoaderImportsMultipleStringValues();
   return 0;
 }

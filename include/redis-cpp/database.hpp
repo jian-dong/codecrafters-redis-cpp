@@ -132,6 +132,11 @@ class Database {
     int64_t removed = 0;
   };
 
+  struct ZEntriesResult {
+    bool wrong_type = false;
+    std::vector<std::pair<std::string, std::string>> entries;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -166,6 +171,7 @@ class Database {
   ZCardResult ZCard(const std::string& key);
   ZScoreResult ZScore(const std::string& key, const std::string& member);
   ZRemResult ZRem(const std::string& key, const std::string& member);
+  ZEntriesResult ZEntries(const std::string& key);
 
  private:
   struct StringValue {

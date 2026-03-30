@@ -23,6 +23,9 @@ constexpr double kMaxLatitude = 85.05112878;
 constexpr int kGeoStepBits = 26;
 constexpr double kEarthRadiusMeters = 6372797.560856;
 constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+constexpr double kMetersPerKilometer = 1000.0;
+constexpr double kMetersPerMile = 1609.344;
+constexpr double kMetersPerFoot = 0.3048;
 
 constexpr std::string_view kMasterReplId =
     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
@@ -190,6 +193,31 @@ bool DecodeGeoMember(Database& database, const std::string& key,
   return true;
 }
 
+bool ParseGeoDistanceMeters(std::string_view radius_text, std::string_view unit_text,
+                            double& radius_meters) {
+  double radius = 0.0;
+  if (!ParseDouble(radius_text, radius)) {
+    return false;
+  }
+
+  const std::string unit = ToUpperAscii(std::string(unit_text));
+  double multiplier = 0.0;
+  if (unit == "M") {
+    multiplier = 1.0;
+  } else if (unit == "KM") {
+    multiplier = kMetersPerKilometer;
+  } else if (unit == "MI") {
+    multiplier = kMetersPerMile;
+  } else if (unit == "FT") {
+    multiplier = kMetersPerFoot;
+  } else {
+    return false;
+  }
+
+  radius_meters = radius * multiplier;
+  return true;
+}
+
 }  // namespace
 
 CommandProcessor::CommandProcessor(Database& database, bool is_replica,
@@ -265,6 +293,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "GEODIST") {
     return HandleGeodist(args);
+  }
+  if (command == "GEOSEARCH") {
+    return HandleGeosearch(args);
   }
   if (command == "ZADD") {
     return HandleZadd(args);
@@ -558,6 +589,56 @@ CommandResult CommandProcessor::HandleGeodist(
   stream << std::fixed << std::setprecision(4)
          << GeoDistanceMeters(longitude_a, latitude_a, longitude_b, latitude_b);
   return RespBulkString{stream.str()};
+}
+
+CommandResult CommandProcessor::HandleGeosearch(
+    const std::vector<std::string>& args) {
+  if (args.size() != 8) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "geosearch"});
+  }
+  if (ToUpperAscii(args[2]) != "FROMLONLAT" ||
+      ToUpperAscii(args[5]) != "BYRADIUS") {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kSyntaxError, .command = "geosearch"});
+  }
+
+  double center_longitude = 0.0;
+  double center_latitude = 0.0;
+  if (!ParseDouble(args[3], center_longitude) ||
+      !ParseDouble(args[4], center_latitude)) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kSyntaxError, .command = "geosearch"});
+  }
+
+  double radius_meters = 0.0;
+  if (!ParseGeoDistanceMeters(args[6], args[7], radius_meters)) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kSyntaxError, .command = "geosearch"});
+  }
+
+  const Database::ZEntriesResult entries = database_.ZEntries(args[1]);
+  if (entries.wrong_type) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongType, .command = "geosearch"});
+  }
+
+  std::vector<std::string> matches;
+  for (const auto& [member, score_text] : entries.entries) {
+    double score = 0.0;
+    if (!ParseDouble(score_text, score) || score < 0.0) {
+      continue;
+    }
+
+    const auto [member_longitude, member_latitude] =
+        DecodeGeoScore(static_cast<uint64_t>(score));
+    if (GeoDistanceMeters(center_longitude, center_latitude, member_longitude,
+                          member_latitude) <= radius_meters) {
+      matches.push_back(member);
+    }
+  }
+
+  return RespArray{matches};
 }
 
 CommandResult CommandProcessor::HandleZadd(

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -224,6 +225,55 @@ void TestGeodistReturnsDistanceBetweenLocations() {
          "GEODIST should return the distance in meters");
   Expect(RespWriter::Write(*result) == "$11\r\n682477.7582\r\n",
          "GEODIST should encode the distance as a RESP bulk string");
+}
+
+void TestGeosearchReturnsMembersWithinRadius() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  Expect(processor.Execute({"GEOADD", "places", "11.5030378", "48.164271", "Munich"}).has_value(),
+         "setup GEOADD Munich should succeed");
+  Expect(processor.Execute({"GEOADD", "places", "2.2944692", "48.8584625", "Paris"}).has_value(),
+         "setup GEOADD Paris should succeed");
+  Expect(processor.Execute({"GEOADD", "places", "-0.0884948", "51.506479", "London"}).has_value(),
+         "setup GEOADD London should succeed");
+
+  redis::CommandResult result =
+      processor.Execute({"GEOSEARCH", "places", "FROMLONLAT", "2", "48",
+                         "BYRADIUS", "100000", "m"});
+  Expect(result.has_value(), "GEOSEARCH within 100km should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "GEOSEARCH should return a RESP array");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"Paris"}),
+         "GEOSEARCH should return only Paris within 100km of 2,48");
+
+  result = processor.Execute({"GEOSEARCH", "places", "FROMLONLAT", "2", "48",
+                              "BYRADIUS", "500000", "m"});
+  Expect(result.has_value(), "GEOSEARCH within 500km should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "GEOSEARCH multi-match response should be a RESP array");
+  std::vector<std::string> matches = std::get<RespArray>(*result).values;
+  std::sort(matches.begin(), matches.end());
+  Expect(matches == std::vector<std::string>({"London", "Paris"}),
+         "GEOSEARCH should return Paris and London within 500km of 2,48");
+
+  result = processor.Execute({"GEOSEARCH", "places", "FROMLONLAT", "11", "50",
+                              "BYRADIUS", "300000", "m"});
+  Expect(result.has_value(), "GEOSEARCH near Munich should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "GEOSEARCH near Munich should return a RESP array");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"Munich"}),
+         "GEOSEARCH should return Munich within 300km of 11,50");
+
+  result = processor.Execute({"GEOSEARCH", "missing_key", "FROMLONLAT", "2",
+                              "48", "BYRADIUS", "100000", "m"});
+  Expect(result.has_value(), "GEOSEARCH missing key should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "GEOSEARCH missing key should return a RESP array");
+  Expect(std::get<RespArray>(*result).values.empty(),
+         "GEOSEARCH missing key should return an empty array");
 }
 
 void TestZrankReturnsSortedSetRankAndNilForMissingMembers() {
@@ -1210,6 +1260,7 @@ int main() {
   TestGeoposReturnsZeroCoordinatesOrNil();
   TestGeoposDecodesCoordinatesFromZsetScores();
   TestGeodistReturnsDistanceBetweenLocations();
+  TestGeosearchReturnsMembersWithinRadius();
   TestZaddCreatesSortedSetAndReturnsAddedCount();
   TestZrankReturnsSortedSetRankAndNilForMissingMembers();
   TestZrangeReturnsSortedSetMembersByIndex();

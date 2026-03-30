@@ -50,6 +50,7 @@ class CommandProcessor {
   CommandResult HandleSubscribe(const std::vector<std::string>& args);
   CommandResult HandleType(const std::vector<std::string>& args);
   CommandResult HandleGeoadd(const std::vector<std::string>& args);
+  CommandResult HandleGeopos(const std::vector<std::string>& args);
   CommandResult HandleZadd(const std::vector<std::string>& args);
   CommandResult HandleZrank(const std::vector<std::string>& args);
   CommandResult HandleZrange(const std::vector<std::string>& args);

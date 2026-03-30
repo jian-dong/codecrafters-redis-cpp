@@ -177,6 +177,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "GEOADD") {
     return HandleGeoadd(args);
   }
+  if (command == "GEOPOS") {
+    return HandleGeopos(args);
+  }
   if (command == "ZADD") {
     return HandleZadd(args);
   }
@@ -396,6 +399,34 @@ CommandResult CommandProcessor::HandleGeoadd(
   }
 
   return RespInteger{result.added};
+}
+
+CommandResult CommandProcessor::HandleGeopos(
+    const std::vector<std::string>& args) {
+  if (args.size() < 3) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "geopos"});
+  }
+
+  std::string response = "*" + std::to_string(args.size() - 2) + "\r\n";
+  for (size_t index = 2; index < args.size(); ++index) {
+    const Database::ZScoreResult result = database_.ZScore(args[1], args[index]);
+    if (result.wrong_type) {
+      return tl::make_unexpected(
+          CommandError{.code = CommandErrorCode::kWrongType, .command = "geopos"});
+    }
+
+    if (!result.found) {
+      response += "*-1\r\n";
+      continue;
+    }
+
+    response += "*2\r\n";
+    response += RespWriter::Write(RespBulkString{"0"});
+    response += RespWriter::Write(RespBulkString{"0"});
+  }
+
+  return RespRaw{std::move(response)};
 }
 
 CommandResult CommandProcessor::HandleZadd(

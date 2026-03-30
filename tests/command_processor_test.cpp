@@ -150,6 +150,40 @@ void TestGeoaddRejectsInvalidCoordinates() {
          "invalid GEOADD latitude error should mention latitude");
 }
 
+void TestGeoposReturnsZeroCoordinatesOrNil() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  Expect(processor.Execute({"GEOADD", "location_key", "-0.0884948", "51.506479", "London"}).has_value(),
+         "setup GEOADD London should succeed");
+  Expect(processor.Execute({"GEOADD", "location_key", "11.5030378", "48.164271", "Munich"}).has_value(),
+         "setup GEOADD Munich should succeed");
+
+  redis::CommandResult result =
+      processor.Execute({"GEOPOS", "location_key", "London", "Munich"});
+  Expect(result.has_value(), "GEOPOS existing members should succeed");
+  Expect(std::holds_alternative<redis::RespRaw>(*result),
+         "GEOPOS should return a raw RESP frame for nested arrays");
+  Expect(
+      RespWriter::Write(*result) ==
+          "*2\r\n*2\r\n$1\r\n0\r\n$1\r\n0\r\n*2\r\n$1\r\n0\r\n$1\r\n0\r\n",
+      "GEOPOS should encode existing members as coordinate pairs");
+
+  result = processor.Execute({"GEOPOS", "location_key", "missing_location"});
+  Expect(result.has_value(), "GEOPOS missing member should succeed");
+  Expect(std::holds_alternative<redis::RespRaw>(*result),
+         "GEOPOS missing member should return a raw RESP frame");
+  Expect(RespWriter::Write(*result) == "*1\r\n*-1\r\n",
+         "GEOPOS missing member should encode as a null array element");
+
+  result = processor.Execute({"GEOPOS", "missing_key", "London", "Munich"});
+  Expect(result.has_value(), "GEOPOS missing key should succeed");
+  Expect(std::holds_alternative<redis::RespRaw>(*result),
+         "GEOPOS missing key should return a raw RESP frame");
+  Expect(RespWriter::Write(*result) == "*2\r\n*-1\r\n*-1\r\n",
+         "GEOPOS missing key should encode each requested member as null");
+}
+
 void TestZrankReturnsSortedSetRankAndNilForMissingMembers() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1131,6 +1165,7 @@ int main() {
   TestSubscribeReturnsConfirmationFrame();
   TestGeoaddReturnsAddedCount();
   TestGeoaddRejectsInvalidCoordinates();
+  TestGeoposReturnsZeroCoordinatesOrNil();
   TestZaddCreatesSortedSetAndReturnsAddedCount();
   TestZrankReturnsSortedSetRankAndNilForMissingMembers();
   TestZrangeReturnsSortedSetMembersByIndex();

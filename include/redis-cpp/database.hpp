@@ -121,6 +121,12 @@ class Database {
     int64_t cardinality = 0;
   };
 
+  struct ZScoreResult {
+    bool wrong_type = false;
+    bool found = false;
+    std::string score;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -149,10 +155,11 @@ class Database {
       std::chrono::steady_clock::duration timeout);
   IncrResult Incr(const std::string& key);
   ZAddResult ZAdd(const std::string& key, double score,
-                  const std::string& member);
+                  const std::string& score_text, const std::string& member);
   ZRankResult ZRank(const std::string& key, const std::string& member);
   ZRangeResult ZRange(const std::string& key, int64_t start, int64_t stop);
   ZCardResult ZCard(const std::string& key);
+  ZScoreResult ZScore(const std::string& key, const std::string& member);
 
  private:
   struct StringValue {
@@ -180,6 +187,7 @@ class Database {
   struct SortedSetEntry {
     std::string member;
     double score = 0.0;
+    std::string score_text;
   };
 
   struct SortedSetValue {

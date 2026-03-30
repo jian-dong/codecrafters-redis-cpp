@@ -274,6 +274,55 @@ void TestZcardReturnsSortedSetCardinality() {
          "ZCARD missing key should return zero");
 }
 
+void TestZscoreReturnsSortedSetMemberScore() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  Expect(processor.Execute({"ZADD", "zset_key", "20.0", "zset_member1"}).has_value(),
+         "setup ZADD zset_member1 should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "30.1", "zset_member2"}).has_value(),
+         "setup ZADD zset_member2 should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "40.2", "zset_member3"}).has_value(),
+         "setup ZADD zset_member3 should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "50.3", "zset_member4"}).has_value(),
+         "setup ZADD zset_member4 should succeed");
+
+  redis::CommandResult result = processor.Execute({"ZSCORE", "zset_key", "zset_member2"});
+  Expect(result.has_value(), "ZSCORE should succeed");
+  Expect(std::holds_alternative<redis::RespBulkString>(*result),
+         "ZSCORE should return a RESP bulk string");
+  Expect(std::get<redis::RespBulkString>(*result).value == "30.1",
+         "ZSCORE should return the member score");
+  Expect(RespWriter::Write(*result) == "$4\r\n30.1\r\n",
+         "ZSCORE should encode the score as a RESP bulk string");
+
+  result = processor.Execute({"ZADD", "zset_key", "100.99", "zset_member2"});
+  Expect(result.has_value(), "updating a sorted-set member should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "updating a sorted-set member should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 0,
+         "updating a sorted-set member should not add a new entry");
+
+  result = processor.Execute({"ZSCORE", "zset_key", "zset_member2"});
+  Expect(result.has_value(), "ZSCORE after update should succeed");
+  Expect(std::holds_alternative<redis::RespBulkString>(*result),
+         "ZSCORE after update should return a RESP bulk string");
+  Expect(std::get<redis::RespBulkString>(*result).value == "100.99",
+         "ZSCORE should return the updated score");
+
+  result = processor.Execute({"ZSCORE", "zset_key", "zset_member100"});
+  Expect(result.has_value(), "ZSCORE missing member should succeed");
+  Expect(std::holds_alternative<redis::RespNullBulk>(*result),
+         "ZSCORE missing member should return a null bulk string");
+  Expect(RespWriter::Write(*result) == "$-1\r\n",
+         "ZSCORE missing member should encode as a null bulk string");
+
+  result = processor.Execute({"ZSCORE", "missing_key", "member"});
+  Expect(result.has_value(), "ZSCORE missing key should succeed");
+  Expect(std::holds_alternative<redis::RespNullBulk>(*result),
+         "ZSCORE missing key should return a null bulk string");
+}
+
 void TestSubscribeTracksChannelsPerClientSession() {
   Database database;
   CommandProcessor processor(database, false);
@@ -994,6 +1043,7 @@ int main() {
   TestZrankReturnsSortedSetRankAndNilForMissingMembers();
   TestZrangeReturnsSortedSetMembersByIndex();
   TestZcardReturnsSortedSetCardinality();
+  TestZscoreReturnsSortedSetMemberScore();
   TestSubscribeTracksChannelsPerClientSession();
   TestSubscribedModeRejectsDisallowedCommands();
   TestSubscribedModePingUsesPubsubResponse();

@@ -609,6 +609,7 @@ Database::IncrResult Database::Incr(const std::string& key) {
 }
 
 Database::ZAddResult Database::ZAdd(const std::string& key, double score,
+                                    const std::string& score_text,
                                     const std::string& member) {
   std::lock_guard<std::mutex> lock(mutex_);
   Entry* entry = FindLiveEntryLocked(key);
@@ -633,6 +634,7 @@ Database::ZAddResult Database::ZAdd(const std::string& key, double score,
     }
 
     existing.score = score;
+    existing.score_text = score_text;
     std::sort(entries.begin(), entries.end(),
               [](const SortedSetEntry& lhs, const SortedSetEntry& rhs) {
                 if (lhs.score != rhs.score) {
@@ -643,7 +645,8 @@ Database::ZAddResult Database::ZAdd(const std::string& key, double score,
     return {.added = 0};
   }
 
-  entries.push_back(SortedSetEntry{.member = member, .score = score});
+  entries.push_back(
+      SortedSetEntry{.member = member, .score = score, .score_text = score_text});
   std::sort(entries.begin(), entries.end(),
             [](const SortedSetEntry& lhs, const SortedSetEntry& rhs) {
               if (lhs.score != rhs.score) {
@@ -734,6 +737,29 @@ Database::ZCardResult Database::ZCard(const std::string& key) {
 
   return {.cardinality = static_cast<int64_t>(
               std::get<SortedSetValue>(entry->value).entries.size())};
+}
+
+Database::ZScoreResult Database::ZScore(const std::string& key,
+                                        const std::string& member) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<SortedSetValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  const std::vector<SortedSetEntry>& entries =
+      std::get<SortedSetValue>(entry->value).entries;
+  for (const SortedSetEntry& existing : entries) {
+    if (existing.member == member) {
+      return {.found = true, .score = existing.score_text};
+    }
+  }
+
+  return {};
 }
 
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {

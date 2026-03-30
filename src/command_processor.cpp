@@ -148,6 +148,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "ZCARD") {
     return HandleZcard(args);
   }
+  if (command == "ZSCORE") {
+    return HandleZscore(args);
+  }
   if (command == "XADD") {
     return HandleXadd(args);
   }
@@ -332,7 +335,8 @@ CommandResult CommandProcessor::HandleZadd(
         .code = CommandErrorCode::kSyntaxError, .command = "zadd"});
   }
 
-  const Database::ZAddResult result = database_.ZAdd(args[1], score, args[3]);
+  const Database::ZAddResult result =
+      database_.ZAdd(args[1], score, args[2], args[3]);
   if (result.wrong_type) {
     return tl::make_unexpected(
         CommandError{.code = CommandErrorCode::kWrongType, .command = "zadd"});
@@ -397,6 +401,25 @@ CommandResult CommandProcessor::HandleZcard(
   }
 
   return RespInteger{result.cardinality};
+}
+
+CommandResult CommandProcessor::HandleZscore(
+    const std::vector<std::string>& args) {
+  if (args.size() != 3) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "zscore"});
+  }
+
+  const Database::ZScoreResult result = database_.ZScore(args[1], args[2]);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "zscore"});
+  }
+  if (!result.found) {
+    return RespNullBulk{};
+  }
+
+  return RespBulkString{result.score};
 }
 
 CommandResult CommandProcessor::HandleXadd(

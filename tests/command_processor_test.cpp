@@ -96,6 +96,18 @@ void TestAclWhoamiReturnsDefaultUser() {
          "ACL WHOAMI should encode the default user as a RESP bulk string");
 }
 
+void TestAclGetuserReturnsFlagsArrayForDefaultUser() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result = processor.Execute({"ACL", "GETUSER", "default"});
+  Expect(result.has_value(), "ACL GETUSER default should succeed");
+  Expect(std::holds_alternative<redis::RespRaw>(*result),
+         "ACL GETUSER default should return a raw RESP frame");
+  Expect(RespWriter::Write(*result) == "*2\r\n$5\r\nflags\r\n*0\r\n",
+         "ACL GETUSER default should return [\"flags\", []]");
+}
+
 void TestZaddCreatesSortedSetAndReturnsAddedCount() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1270,6 +1282,7 @@ int main() {
   TestMasterReplconfStillReturnsOk();
   TestSubscribeReturnsConfirmationFrame();
   TestAclWhoamiReturnsDefaultUser();
+  TestAclGetuserReturnsFlagsArrayForDefaultUser();
   TestGeoaddReturnsAddedCount();
   TestGeoaddRejectsInvalidCoordinates();
   TestGeoposReturnsZeroCoordinatesOrNil();

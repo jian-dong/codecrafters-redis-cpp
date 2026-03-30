@@ -467,17 +467,25 @@ CommandResult CommandProcessor::HandleKeys(
 
 CommandResult CommandProcessor::HandleAcl(
     const std::vector<std::string>& args) {
-  if (args.size() != 2) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongArity, .command = "acl"});
+  if (args.size() == 2 && ToUpperAscii(args[1]) == "WHOAMI") {
+    return RespBulkString{"default"};
   }
 
-  if (ToUpperAscii(args[1]) != "WHOAMI") {
+  if (args.size() == 3 && ToUpperAscii(args[1]) == "GETUSER") {
+    if (args[2] != "default") {
+      return RespNullBulk{};
+    }
+
+    return RespRaw{"*2\r\n$5\r\nflags\r\n*0\r\n"};
+  }
+
+  if (args.size() == 2 || args.size() == 3) {
     return tl::make_unexpected(
         CommandError{.code = CommandErrorCode::kSyntaxError, .command = "acl"});
   }
 
-  return RespBulkString{"default"};
+  return tl::make_unexpected(
+      CommandError{.code = CommandErrorCode::kWrongArity, .command = "acl"});
 }
 
 CommandResult CommandProcessor::HandleSubscribe(

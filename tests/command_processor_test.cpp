@@ -174,6 +174,38 @@ void TestZrangeReturnsSortedSetMembersByIndex() {
              std::vector<std::string>({"baz", "caz", "paz", "bar", "foo"}),
          "ZRANGE should clamp stop to the last member");
 
+  result = processor.Execute({"ZRANGE", "zset_key", "2", "-1"});
+  Expect(result.has_value(), "ZRANGE 2 -1 should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE with a negative stop should return a RESP array");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"paz", "bar", "foo"}),
+         "ZRANGE should resolve -1 to the last member");
+
+  result = processor.Execute({"ZRANGE", "zset_key", "0", "-3"});
+  Expect(result.has_value(), "ZRANGE 0 -3 should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE with a negative stop offset should return a RESP array");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"baz", "caz", "paz"}),
+         "ZRANGE should count negative indexes from the end");
+
+  result = processor.Execute({"ZRANGE", "zset_key", "-2", "-1"});
+  Expect(result.has_value(), "ZRANGE -2 -1 should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE with negative start and stop should return a RESP array");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"bar", "foo"}),
+         "ZRANGE should resolve negative indexes from the tail");
+
+  result = processor.Execute({"ZRANGE", "zset_key", "-99", "-1"});
+  Expect(result.has_value(), "ZRANGE with out-of-range negative start should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE with out-of-range negative start should return a RESP array");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"baz", "caz", "paz", "bar", "foo"}),
+         "ZRANGE should clamp out-of-range negative indexes to the start");
+
   result = processor.Execute({"ZRANGE", "zset_key", "5", "6"});
   Expect(result.has_value(), "ZRANGE past end should succeed");
   Expect(std::holds_alternative<RespArray>(*result),

@@ -693,7 +693,19 @@ Database::ZRangeResult Database::ZRange(const std::string& key, int64_t start,
       std::get<SortedSetValue>(entry->value).entries;
   const int64_t entry_count = static_cast<int64_t>(entries.size());
 
-  if (start < 0 || stop < 0 || start >= entry_count || start > stop) {
+  if (start < 0) {
+    start += entry_count;
+  }
+  if (stop < 0) {
+    stop += entry_count;
+  }
+  if (start < 0) {
+    start = 0;
+  }
+  if (stop < 0) {
+    stop = 0;
+  }
+  if (start >= entry_count || start > stop) {
     return {};
   }
   if (stop >= entry_count) {

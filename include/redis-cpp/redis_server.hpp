@@ -1,6 +1,6 @@
 #pragma once
 
-#include "redis-cpp/command_processor.hpp"
+#include "redis-cpp/command_executor.hpp"
 #include "redis-cpp/database.hpp"
 #include "redis-cpp/pubsub_manager.hpp"
 #include "redis-cpp/replica_manager.hpp"
@@ -25,7 +25,7 @@ class RedisServer {
   Database database_;
   PubSubManager pubsub_manager_;
   ReplicaManager replica_manager_;
-  CommandProcessor command_processor_;
+  CommandExecutor command_executor_;
   Socket master_socket_;
   std::string master_leftover_;
 };

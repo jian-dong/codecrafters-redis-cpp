@@ -1,6 +1,6 @@
 #pragma once
 
-#include "redis-cpp/command_processor.hpp"
+#include "redis-cpp/command_executor.hpp"
 #include "redis-cpp/pubsub_manager.hpp"
 #include "redis-cpp/replica_manager.hpp"
 #include "redis-cpp/resp.hpp"
@@ -12,7 +12,7 @@ namespace redis {
 
 class ClientSession {
  public:
-  ClientSession(Socket socket, CommandProcessor& command_processor,
+  ClientSession(Socket socket, CommandExecutor& command_executor,
                 ReplicaManager* replica_manager = nullptr,
                 PubSubManager* pubsub_manager = nullptr);
   ~ClientSession();
@@ -23,7 +23,7 @@ class ClientSession {
   bool SendResponse(const std::string& response);
 
   Socket socket_;
-  CommandProcessor& command_processor_;
+  CommandExecutor& command_executor_;
   ReplicaManager* replica_manager_;
   PubSubManager* pubsub_manager_;
   RespParser parser_;

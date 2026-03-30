@@ -62,8 +62,8 @@ class MasterReader {
 
 RedisServer::RedisServer(ServerConfig config)
     : config_(config),
-      command_processor_(database_, !config_.replicaof.empty(),
-                         &replica_manager_, &config_) {}
+      command_executor_(database_, !config_.replicaof.empty(), &replica_manager_,
+                        &config_) {}
 
 Status RedisServer::Run() {
   LoadDatabaseFromRdb(config_, database_);
@@ -178,7 +178,7 @@ void RedisServer::ProcessReplicatedCommands() {
         continue;
       }
 
-      (void)command_processor_.Execute(**cmd);
+      (void)command_executor_.Execute(**cmd);
       replica_offset += cmd_bytes;
     }
 
@@ -190,7 +190,7 @@ void RedisServer::ProcessReplicatedCommands() {
 
 void RedisServer::ServeClient(Socket socket) {
   std::cout << "Client connected\n";
-  ClientSession session(std::move(socket), command_processor_, &replica_manager_,
+  ClientSession session(std::move(socket), command_executor_, &replica_manager_,
                         &pubsub_manager_);
   session.Run();
 }

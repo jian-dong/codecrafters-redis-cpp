@@ -91,14 +91,14 @@ std::string EncodeNoauthResponse() {
 
 }  // namespace
 
-ClientSession::ClientSession(Socket socket, CommandProcessor& command_processor,
+ClientSession::ClientSession(Socket socket, CommandExecutor& command_executor,
                              ReplicaManager* replica_manager,
                              PubSubManager* pubsub_manager)
     : socket_(std::move(socket)),
-      command_processor_(command_processor),
+      command_executor_(command_executor),
       replica_manager_(replica_manager),
       pubsub_manager_(pubsub_manager),
-      authenticated_(command_processor.DefaultUserStartsAuthenticated()) {}
+      authenticated_(command_executor.DefaultUserStartsAuthenticated()) {}
 
 ClientSession::~ClientSession() {
   if (pubsub_manager_ == nullptr) {
@@ -272,7 +272,7 @@ void ClientSession::Run() {
         in_multi_ = false;
         response = "*" + std::to_string(queued_commands_.size()) + "\r\n";
         for (const std::vector<std::string>& queued_args : queued_commands_) {
-          CommandResult command_result = command_processor_.Execute(queued_args);
+          CommandResult command_result = command_executor_.Execute(queued_args);
           if (!command_result) {
             response += RespWriter::Error(CommandErrorMessage(command_result.error()));
           } else {
@@ -288,7 +288,7 @@ void ClientSession::Run() {
         queued_commands_.push_back(args);
         response = "+QUEUED\r\n";
       } else {
-        CommandResult command_result = command_processor_.Execute(args);
+        CommandResult command_result = command_executor_.Execute(args);
         if (command_result && cmd == "AUTH") {
           authenticated_ = true;
         }

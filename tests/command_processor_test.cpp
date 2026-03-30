@@ -101,7 +101,7 @@ void TestGeoaddReturnsAddedCount() {
   CommandProcessor processor(database, false);
 
   redis::CommandResult result =
-      processor.Execute({"GEOADD", "places", "11.5030378", "48.164271", "Munich"});
+      processor.Execute({"GEOADD", "places", "2.2944692", "48.8584625", "Paris"});
   Expect(result.has_value(), "GEOADD should succeed");
   Expect(std::holds_alternative<RespInteger>(*result),
          "GEOADD should return a RESP integer");
@@ -115,8 +115,15 @@ void TestGeoaddReturnsAddedCount() {
   Expect(std::holds_alternative<RespArray>(*result),
          "ZRANGE after GEOADD should return a RESP array");
   Expect(std::get<RespArray>(*result).values ==
-             std::vector<std::string>({"Munich"}),
+             std::vector<std::string>({"Paris"}),
          "GEOADD should store the location in the sorted set");
+
+  result = processor.Execute({"ZSCORE", "places", "Paris"});
+  Expect(result.has_value(), "ZSCORE after GEOADD should succeed");
+  Expect(std::holds_alternative<redis::RespBulkString>(*result),
+         "ZSCORE after GEOADD should return a RESP bulk string");
+  Expect(std::get<redis::RespBulkString>(*result).value == "3663832614298053",
+         "GEOADD should store the correct geospatial score");
 }
 
 void TestGeoaddRejectsInvalidCoordinates() {

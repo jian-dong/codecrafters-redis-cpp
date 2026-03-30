@@ -17,6 +17,7 @@ constexpr double kMinLongitude = -180.0;
 constexpr double kMaxLongitude = 180.0;
 constexpr double kMinLatitude = -85.05112878;
 constexpr double kMaxLatitude = 85.05112878;
+constexpr int kGeoStepBits = 26;
 
 constexpr std::string_view kMasterReplId =
     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
@@ -74,6 +75,36 @@ bool ParseDouble(std::string_view data, double& value) {
   const std::string text(data);
   value = std::strtod(text.c_str(), &parse_end);
   return parse_end == text.c_str() + text.size() && errno != ERANGE;
+}
+
+uint64_t EncodeGeoScore(double longitude, double latitude) {
+  double longitude_min = kMinLongitude;
+  double longitude_max = kMaxLongitude;
+  double latitude_min = kMinLatitude;
+  double latitude_max = kMaxLatitude;
+
+  uint64_t score = 0;
+  for (int bit = 0; bit < kGeoStepBits; ++bit) {
+    const double longitude_mid = (longitude_min + longitude_max) / 2.0;
+    score <<= 1;
+    if (longitude >= longitude_mid) {
+      score |= 1;
+      longitude_min = longitude_mid;
+    } else {
+      longitude_max = longitude_mid;
+    }
+
+    const double latitude_mid = (latitude_min + latitude_max) / 2.0;
+    score <<= 1;
+    if (latitude >= latitude_mid) {
+      score |= 1;
+      latitude_min = latitude_mid;
+    } else {
+      latitude_max = latitude_mid;
+    }
+  }
+
+  return score;
 }
 
 }  // namespace
@@ -355,8 +386,10 @@ CommandResult CommandProcessor::HandleGeoadd(
         .code = CommandErrorCode::kInvalidGeoCoordinates, .command = "geoadd"});
   }
 
-  const Database::ZAddResult result =
-      database_.ZAdd(args[1], 0.0, "0", args[4]);
+  const uint64_t geo_score = EncodeGeoScore(longitude, latitude);
+  const Database::ZAddResult result = database_.ZAdd(
+      args[1], static_cast<double>(geo_score), std::to_string(geo_score),
+      args[4]);
   if (result.wrong_type) {
     return tl::make_unexpected(
         CommandError{.code = CommandErrorCode::kWrongType, .command = "geoadd"});

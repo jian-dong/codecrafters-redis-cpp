@@ -96,6 +96,21 @@ void TestZaddCreatesSortedSetAndReturnsAddedCount() {
          "ZADD should encode the added-member count as a RESP integer");
 }
 
+void TestGeoaddReturnsAddedCount() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result =
+      processor.Execute({"GEOADD", "places", "11.5030378", "48.164271", "Munich"});
+  Expect(result.has_value(), "GEOADD should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "GEOADD should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 1,
+         "GEOADD should report one added location");
+  Expect(RespWriter::Write(*result) == ":1\r\n",
+         "GEOADD should encode the added-location count as a RESP integer");
+}
+
 void TestZrankReturnsSortedSetRankAndNilForMissingMembers() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1075,6 +1090,7 @@ int main() {
   TestReplicaReplconfGetackReturnsAck();
   TestMasterReplconfStillReturnsOk();
   TestSubscribeReturnsConfirmationFrame();
+  TestGeoaddReturnsAddedCount();
   TestZaddCreatesSortedSetAndReturnsAddedCount();
   TestZrankReturnsSortedSetRankAndNilForMissingMembers();
   TestZrangeReturnsSortedSetMembersByIndex();

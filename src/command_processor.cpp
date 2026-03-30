@@ -136,6 +136,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "TYPE") {
     return HandleType(args);
   }
+  if (command == "GEOADD") {
+    return HandleGeoadd(args);
+  }
   if (command == "ZADD") {
     return HandleZadd(args);
   }
@@ -323,6 +326,16 @@ CommandResult CommandProcessor::HandleType(
   }
 
   return RespSimpleString{ValueTypeName(database_.TypeOf(args[1]))};
+}
+
+CommandResult CommandProcessor::HandleGeoadd(
+    const std::vector<std::string>& args) {
+  if (args.size() != 5) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "geoadd"});
+  }
+
+  return RespInteger{1};
 }
 
 CommandResult CommandProcessor::HandleZadd(

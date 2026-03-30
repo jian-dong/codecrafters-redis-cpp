@@ -139,6 +139,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "ZADD") {
     return HandleZadd(args);
   }
+  if (command == "ZRANK") {
+    return HandleZrank(args);
+  }
   if (command == "XADD") {
     return HandleXadd(args);
   }
@@ -330,6 +333,25 @@ CommandResult CommandProcessor::HandleZadd(
   }
 
   return RespInteger{result.added};
+}
+
+CommandResult CommandProcessor::HandleZrank(
+    const std::vector<std::string>& args) {
+  if (args.size() != 3) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "zrank"});
+  }
+
+  const Database::ZRankResult result = database_.ZRank(args[1], args[2]);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "zrank"});
+  }
+  if (!result.found) {
+    return RespNullBulk{};
+  }
+
+  return RespInteger{result.rank};
 }
 
 CommandResult CommandProcessor::HandleXadd(

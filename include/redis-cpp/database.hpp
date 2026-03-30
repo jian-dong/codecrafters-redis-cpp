@@ -105,6 +105,12 @@ class Database {
     int64_t added = 0;
   };
 
+  struct ZRankResult {
+    bool wrong_type = false;
+    bool found = false;
+    int64_t rank = 0;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -134,6 +140,7 @@ class Database {
   IncrResult Incr(const std::string& key);
   ZAddResult ZAdd(const std::string& key, double score,
                   const std::string& member);
+  ZRankResult ZRank(const std::string& key, const std::string& member);
 
  private:
   struct StringValue {

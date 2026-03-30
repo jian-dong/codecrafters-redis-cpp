@@ -96,6 +96,50 @@ void TestZaddCreatesSortedSetAndReturnsAddedCount() {
          "ZADD should encode the added-member count as a RESP integer");
 }
 
+void TestZrankReturnsSortedSetRankAndNilForMissingMembers() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  Expect(processor.Execute({"ZADD", "zset_key", "100.0", "foo"}).has_value(),
+         "setup ZADD foo should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "100.0", "bar"}).has_value(),
+         "setup ZADD bar should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "20.0", "baz"}).has_value(),
+         "setup ZADD baz should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "30.1", "caz"}).has_value(),
+         "setup ZADD caz should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "40.2", "paz"}).has_value(),
+         "setup ZADD paz should succeed");
+
+  redis::CommandResult result = processor.Execute({"ZRANK", "zset_key", "caz"});
+  Expect(result.has_value(), "ZRANK caz should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "ZRANK should return a RESP integer for existing members");
+  Expect(std::get<RespInteger>(*result).value == 1,
+         "ZRANK should return the member rank in score order");
+  Expect(RespWriter::Write(*result) == ":1\r\n",
+         "ZRANK should encode ranks as RESP integers");
+
+  result = processor.Execute({"ZRANK", "zset_key", "bar"});
+  Expect(result.has_value(), "ZRANK bar should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "ZRANK bar should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 3,
+         "ZRANK should break score ties lexicographically");
+
+  result = processor.Execute({"ZRANK", "zset_key", "missing_member"});
+  Expect(result.has_value(), "ZRANK missing member should succeed");
+  Expect(std::holds_alternative<redis::RespNullBulk>(*result),
+         "ZRANK missing member should return a null bulk string");
+  Expect(RespWriter::Write(*result) == "$-1\r\n",
+         "ZRANK missing member should encode as a null bulk string");
+
+  result = processor.Execute({"ZRANK", "missing_key", "member"});
+  Expect(result.has_value(), "ZRANK missing key should succeed");
+  Expect(std::holds_alternative<redis::RespNullBulk>(*result),
+         "ZRANK missing key should return a null bulk string");
+}
+
 void TestSubscribeTracksChannelsPerClientSession() {
   Database database;
   CommandProcessor processor(database, false);
@@ -813,6 +857,7 @@ int main() {
   TestMasterReplconfStillReturnsOk();
   TestSubscribeReturnsConfirmationFrame();
   TestZaddCreatesSortedSetAndReturnsAddedCount();
+  TestZrankReturnsSortedSetRankAndNilForMissingMembers();
   TestSubscribeTracksChannelsPerClientSession();
   TestSubscribedModeRejectsDisallowedCommands();
   TestSubscribedModePingUsesPubsubResponse();

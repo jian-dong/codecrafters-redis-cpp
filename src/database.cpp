@@ -654,6 +654,29 @@ Database::ZAddResult Database::ZAdd(const std::string& key, double score,
   return {.added = 1};
 }
 
+Database::ZRankResult Database::ZRank(const std::string& key,
+                                      const std::string& member) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<SortedSetValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  const std::vector<SortedSetEntry>& entries =
+      std::get<SortedSetValue>(entry->value).entries;
+  for (size_t index = 0; index < entries.size(); ++index) {
+    if (entries[index].member == member) {
+      return {.found = true, .rank = static_cast<int64_t>(index)};
+    }
+  }
+
+  return {};
+}
+
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   const auto found = store_.find(key);
   if (found == store_.end()) {

@@ -111,6 +111,11 @@ class Database {
     int64_t rank = 0;
   };
 
+  struct ZRangeResult {
+    bool wrong_type = false;
+    std::vector<std::string> members;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -141,6 +146,7 @@ class Database {
   ZAddResult ZAdd(const std::string& key, double score,
                   const std::string& member);
   ZRankResult ZRank(const std::string& key, const std::string& member);
+  ZRangeResult ZRange(const std::string& key, int64_t start, int64_t stop);
 
  private:
   struct StringValue {

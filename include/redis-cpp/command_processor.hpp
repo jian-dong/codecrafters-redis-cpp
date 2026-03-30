@@ -50,6 +50,7 @@ class CommandProcessor {
   CommandResult HandleType(const std::vector<std::string>& args);
   CommandResult HandleZadd(const std::vector<std::string>& args);
   CommandResult HandleZrank(const std::vector<std::string>& args);
+  CommandResult HandleZrange(const std::vector<std::string>& args);
   CommandResult HandleXadd(const std::vector<std::string>& args);
   CommandResult HandleXrange(const std::vector<std::string>& args);
   CommandResult HandleXread(const std::vector<std::string>& args);

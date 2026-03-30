@@ -8,6 +8,7 @@ list(REMOVE_ITEM REDIS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp)
 
 set(CMAKE_CXX_STANDARD 23) # Enable the C++23 standard
 set(THREADS_PREFER_PTHREAD_FLAG ON)
+option(REDIS_BUILD_TESTS "Build redis_tests target and register CTest tests" OFF)
 
 find_package(Threads REQUIRED)
 find_package(asio CONFIG REQUIRED)
@@ -18,11 +19,13 @@ target_include_directories(redis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(redis PRIVATE asio asio::asio)
 target_link_libraries(redis PRIVATE Threads::Threads)
 
-enable_testing()
+if(REDIS_BUILD_TESTS)
+  enable_testing()
 
-add_executable(redis_tests tests/command_processor_test.cpp ${REDIS_SOURCES})
-target_include_directories(redis_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(redis_tests PRIVATE asio asio::asio)
-target_link_libraries(redis_tests PRIVATE Threads::Threads)
+  add_executable(redis_tests tests/command_processor_test.cpp ${REDIS_SOURCES})
+  target_include_directories(redis_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(redis_tests PRIVATE asio asio::asio)
+  target_link_libraries(redis_tests PRIVATE Threads::Threads)
 
-add_test(NAME redis_tests COMMAND redis_tests)
+  add_test(NAME redis_tests COMMAND redis_tests)
+endif()

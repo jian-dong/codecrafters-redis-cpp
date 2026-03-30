@@ -142,6 +142,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "ZRANK") {
     return HandleZrank(args);
   }
+  if (command == "ZRANGE") {
+    return HandleZrange(args);
+  }
   if (command == "XADD") {
     return HandleXadd(args);
   }
@@ -352,6 +355,29 @@ CommandResult CommandProcessor::HandleZrank(
   }
 
   return RespInteger{result.rank};
+}
+
+CommandResult CommandProcessor::HandleZrange(
+    const std::vector<std::string>& args) {
+  if (args.size() != 4) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "zrange"});
+  }
+
+  int64_t start = 0;
+  int64_t stop = 0;
+  if (!ParseSignedInteger(args[2], start) ||
+      !ParseSignedInteger(args[3], stop)) {
+    return RespArray{};
+  }
+
+  const Database::ZRangeResult result = database_.ZRange(args[1], start, stop);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "zrange"});
+  }
+
+  return RespArray{result.members};
 }
 
 CommandResult CommandProcessor::HandleXadd(

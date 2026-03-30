@@ -140,6 +140,64 @@ void TestZrankReturnsSortedSetRankAndNilForMissingMembers() {
          "ZRANK missing key should return a null bulk string");
 }
 
+void TestZrangeReturnsSortedSetMembersByIndex() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  Expect(processor.Execute({"ZADD", "zset_key", "100.0", "foo"}).has_value(),
+         "setup ZADD foo should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "100.0", "bar"}).has_value(),
+         "setup ZADD bar should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "20.0", "baz"}).has_value(),
+         "setup ZADD baz should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "30.1", "caz"}).has_value(),
+         "setup ZADD caz should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "40.2", "paz"}).has_value(),
+         "setup ZADD paz should succeed");
+
+  redis::CommandResult result = processor.Execute({"ZRANGE", "zset_key", "2", "4"});
+  Expect(result.has_value(), "ZRANGE 2 4 should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE should return a RESP array");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"paz", "bar", "foo"}),
+         "ZRANGE should return members in sorted-set order");
+  Expect(RespWriter::Write(*result) ==
+             "*3\r\n$3\r\npaz\r\n$3\r\nbar\r\n$3\r\nfoo\r\n",
+         "ZRANGE should encode members as a RESP array");
+
+  result = processor.Execute({"ZRANGE", "zset_key", "0", "10"});
+  Expect(result.has_value(), "ZRANGE 0 10 should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE with large stop should return a RESP array");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"baz", "caz", "paz", "bar", "foo"}),
+         "ZRANGE should clamp stop to the last member");
+
+  result = processor.Execute({"ZRANGE", "zset_key", "5", "6"});
+  Expect(result.has_value(), "ZRANGE past end should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE past end should still return a RESP array");
+  Expect(std::get<RespArray>(*result).values.empty(),
+         "ZRANGE past end should return an empty array");
+  Expect(RespWriter::Write(*result) == "*0\r\n",
+         "ZRANGE empty results should encode as an empty array");
+
+  result = processor.Execute({"ZRANGE", "zset_key", "4", "2"});
+  Expect(result.has_value(), "ZRANGE with start > stop should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE with start > stop should return a RESP array");
+  Expect(std::get<RespArray>(*result).values.empty(),
+         "ZRANGE with start > stop should return an empty array");
+
+  result = processor.Execute({"ZRANGE", "missing_key", "0", "1"});
+  Expect(result.has_value(), "ZRANGE missing key should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE missing key should return a RESP array");
+  Expect(std::get<RespArray>(*result).values.empty(),
+         "ZRANGE missing key should return an empty array");
+}
+
 void TestSubscribeTracksChannelsPerClientSession() {
   Database database;
   CommandProcessor processor(database, false);
@@ -858,6 +916,7 @@ int main() {
   TestSubscribeReturnsConfirmationFrame();
   TestZaddCreatesSortedSetAndReturnsAddedCount();
   TestZrankReturnsSortedSetRankAndNilForMissingMembers();
+  TestZrangeReturnsSortedSetMembersByIndex();
   TestSubscribeTracksChannelsPerClientSession();
   TestSubscribedModeRejectsDisallowedCommands();
   TestSubscribedModePingUsesPubsubResponse();

@@ -677,6 +677,38 @@ Database::ZRankResult Database::ZRank(const std::string& key,
   return {};
 }
 
+Database::ZRangeResult Database::ZRange(const std::string& key, int64_t start,
+                                        int64_t stop) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<SortedSetValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  const std::vector<SortedSetEntry>& entries =
+      std::get<SortedSetValue>(entry->value).entries;
+  const int64_t entry_count = static_cast<int64_t>(entries.size());
+
+  if (start < 0 || stop < 0 || start >= entry_count || start > stop) {
+    return {};
+  }
+  if (stop >= entry_count) {
+    stop = entry_count - 1;
+  }
+
+  std::vector<std::string> members;
+  members.reserve(static_cast<size_t>(stop - start + 1));
+  for (int64_t index = start; index <= stop; ++index) {
+    members.push_back(entries[static_cast<size_t>(index)].member);
+  }
+
+  return {.members = std::move(members)};
+}
+
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   const auto found = store_.find(key);
   if (found == store_.end()) {

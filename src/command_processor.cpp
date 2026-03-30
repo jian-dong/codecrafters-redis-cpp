@@ -352,6 +352,40 @@ CommandProcessor::CommandProcessor(Database& database, bool is_replica,
       server_config_(server_config) {}
 
 bool CommandProcessor::DefaultUserStartsAuthenticated() const {
+  return DefaultUserUsesNoPassword();
+}
+
+bool CommandProcessor::DefaultUserAcceptsPassword(
+    const std::string& password) const {
+  const std::string password_hash = Sha256Hex(password);
+
+  std::lock_guard<std::mutex> lock(acl_mutex_);
+  if (default_user_.nopass) {
+    return true;
+  }
+
+  for (const std::string& stored_hash : default_user_.password_hashes) {
+    if (stored_hash == password_hash) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+RespRaw CommandProcessor::DefaultUserDescription() const {
+  std::lock_guard<std::mutex> lock(acl_mutex_);
+  return RespRaw{EncodeAclGetuserResponse(default_user_.nopass,
+                                          default_user_.password_hashes)};
+}
+
+void CommandProcessor::SetDefaultUserPassword(const std::string& password) {
+  std::lock_guard<std::mutex> lock(acl_mutex_);
+  default_user_.nopass = false;
+  default_user_.password_hashes = {Sha256Hex(password)};
+}
+
+bool CommandProcessor::DefaultUserUsesNoPassword() const {
   std::lock_guard<std::mutex> lock(acl_mutex_);
   return default_user_.nopass;
 }
@@ -610,17 +644,8 @@ CommandResult CommandProcessor::HandleAuth(
         CommandError{.code = CommandErrorCode::kWrongPass, .command = "auth"});
   }
 
-  const std::string password_hash = Sha256Hex(args[2]);
-
-  std::lock_guard<std::mutex> lock(acl_mutex_);
-  if (default_user_.nopass) {
+  if (DefaultUserAcceptsPassword(args[2])) {
     return RespSimpleString{"OK"};
-  }
-
-  for (const std::string& stored_hash : default_user_.password_hashes) {
-    if (stored_hash == password_hash) {
-      return RespSimpleString{"OK"};
-    }
   }
 
   return tl::make_unexpected(
@@ -638,10 +663,7 @@ CommandResult CommandProcessor::HandleAcl(
       return RespNullBulk{};
     }
 
-    std::lock_guard<std::mutex> lock(acl_mutex_);
-    return RespRaw{
-        EncodeAclGetuserResponse(default_user_.nopass,
-                                 default_user_.password_hashes)};
+    return DefaultUserDescription();
   }
 
   if (args.size() == 4 && ToUpperAscii(args[1]) == "SETUSER") {
@@ -650,9 +672,7 @@ CommandResult CommandProcessor::HandleAcl(
           CommandError{.code = CommandErrorCode::kSyntaxError, .command = "acl"});
     }
 
-    std::lock_guard<std::mutex> lock(acl_mutex_);
-    default_user_.nopass = false;
-    default_user_.password_hashes = {Sha256Hex(std::string_view(args[3]).substr(1))};
+    SetDefaultUserPassword(args[3].substr(1));
     return RespSimpleString{"OK"};
   }
 

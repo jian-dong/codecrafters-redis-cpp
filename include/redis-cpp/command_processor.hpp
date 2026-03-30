@@ -78,6 +78,10 @@ class CommandProcessor {
   CommandResult HandleInfo(const std::vector<std::string>& args);
   CommandResult HandleReplconf(const std::vector<std::string>& args);
   CommandResult HandleWait(const std::vector<std::string>& args);
+  bool DefaultUserAcceptsPassword(const std::string& password) const;
+  RespRaw DefaultUserDescription() const;
+  void SetDefaultUserPassword(const std::string& password);
+  bool DefaultUserUsesNoPassword() const;
 
   struct AclUserState {
     bool nopass = true;

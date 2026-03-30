@@ -110,6 +110,16 @@ ClientSession::~ClientSession() {
   }
 }
 
+bool ClientSession::SendResponse(const std::string& response) {
+  Status send_status = socket_.SendAll(response);
+  if (!send_status) {
+    LogError(send_status.error());
+    return false;
+  }
+
+  return true;
+}
+
 void ClientSession::Run() {
   char buffer[kReadBufferSize];
   while (true) {
@@ -153,11 +163,7 @@ void ClientSession::Run() {
         const std::string raw_command = args.empty() ? "" : ToUpperAscii(args[0]);
         const std::string response = RespWriter::Error(
             "ERR Can't execute '" + raw_command + "' in subscribed mode");
-        Status send_status = socket_.SendAll(response);
-        if (!send_status) {
-          LogError(send_status.error());
-        }
-        if (!send_status) {
+        if (!SendResponse(response)) {
           return;
         }
         continue;
@@ -165,9 +171,7 @@ void ClientSession::Run() {
 
       if (!authenticated_ && cmd != "AUTH") {
         const std::string response = EncodeNoauthResponse();
-        Status send_status = socket_.SendAll(response);
-        if (!send_status) {
-          LogError(send_status.error());
+        if (!SendResponse(response)) {
           return;
         }
         continue;
@@ -260,9 +264,8 @@ void ClientSession::Run() {
         response = "+RESET\r\n";
       } else if (cmd == "QUIT") {
         response = "+OK\r\n";
-        Status send_status = socket_.SendAll(response);
-        if (!send_status) {
-          LogError(send_status.error());
+        if (!SendResponse(response)) {
+          return;
         }
         return;
       } else if (cmd == "EXEC" && in_multi_) {
@@ -297,9 +300,7 @@ void ClientSession::Run() {
         }
 
         if (command_result && cmd == "PSYNC" && replica_manager_ != nullptr) {
-          Status send_status = socket_.SendAll(response);
-          if (!send_status) {
-            LogError(send_status.error());
+          if (!SendResponse(response)) {
             return;
           }
           replica_manager_->AddReplica(socket_.Get());
@@ -313,9 +314,7 @@ void ClientSession::Run() {
         }
       }
 
-      Status send_status = socket_.SendAll(response);
-      if (!send_status) {
-        LogError(send_status.error());
+      if (!SendResponse(response)) {
         return;
       }
     }

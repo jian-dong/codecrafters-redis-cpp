@@ -20,6 +20,8 @@ class ClientSession {
   void Run();
 
  private:
+  bool SendResponse(const std::string& response);
+
   Socket socket_;
   CommandProcessor& command_processor_;
   ReplicaManager* replica_manager_;

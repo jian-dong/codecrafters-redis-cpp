@@ -105,8 +105,8 @@ void TestAclGetuserReturnsFlagsArrayForDefaultUser() {
   Expect(std::holds_alternative<redis::RespRaw>(*result),
          "ACL GETUSER default should return a raw RESP frame");
   Expect(RespWriter::Write(*result) ==
-             "*2\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n",
-         "ACL GETUSER default should return [\"flags\", [\"nopass\"]]");
+             "*4\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n$9\r\npasswords\r\n*0\r\n",
+         "ACL GETUSER default should return [\"flags\", [\"nopass\"], \"passwords\", []]");
 }
 
 void TestZaddCreatesSortedSetAndReturnsAddedCount() {

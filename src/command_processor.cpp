@@ -476,7 +476,7 @@ CommandResult CommandProcessor::HandleAcl(
       return RespNullBulk{};
     }
 
-    return RespRaw{"*2\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n"};
+    return RespRaw{"*4\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n$9\r\npasswords\r\n*0\r\n"};
   }
 
   if (args.size() == 2 || args.size() == 3) {

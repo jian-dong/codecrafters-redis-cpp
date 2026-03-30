@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cerrno>
+#include <cmath>
 #include <iomanip>
 #include <cstdint>
 #include <optional>
@@ -20,6 +21,8 @@ constexpr double kMaxLongitude = 180.0;
 constexpr double kMinLatitude = -85.05112878;
 constexpr double kMaxLatitude = 85.05112878;
 constexpr int kGeoStepBits = 26;
+constexpr double kEarthRadiusMeters = 6372797.560856;
+constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
 
 constexpr std::string_view kMasterReplId =
     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
@@ -146,6 +149,47 @@ std::string FormatGeoCoordinate(double value) {
   return stream.str();
 }
 
+double GeoDistanceMeters(double longitude_a, double latitude_a, double longitude_b,
+                         double latitude_b) {
+  const double latitude_a_radians = latitude_a * kDegreesToRadians;
+  const double latitude_b_radians = latitude_b * kDegreesToRadians;
+  const double delta_latitude_radians =
+      (latitude_b - latitude_a) * kDegreesToRadians;
+  const double delta_longitude_radians =
+      (longitude_b - longitude_a) * kDegreesToRadians;
+
+  const double haversine =
+      std::sin(delta_latitude_radians / 2.0) *
+          std::sin(delta_latitude_radians / 2.0) +
+      std::cos(latitude_a_radians) * std::cos(latitude_b_radians) *
+          std::sin(delta_longitude_radians / 2.0) *
+          std::sin(delta_longitude_radians / 2.0);
+  return 2.0 * kEarthRadiusMeters * std::asin(std::sqrt(haversine));
+}
+
+bool DecodeGeoMember(Database& database, const std::string& key,
+                     const std::string& member, double& longitude,
+                     double& latitude, bool& wrong_type) {
+  const Database::ZScoreResult result = database.ZScore(key, member);
+  if (result.wrong_type) {
+    wrong_type = true;
+    return false;
+  }
+  if (!result.found) {
+    return false;
+  }
+
+  double score = 0.0;
+  if (!ParseDouble(result.score, score) || score < 0.0) {
+    return false;
+  }
+
+  const auto decoded = DecodeGeoScore(static_cast<uint64_t>(score));
+  longitude = decoded.first;
+  latitude = decoded.second;
+  return true;
+}
+
 }  // namespace
 
 CommandProcessor::CommandProcessor(Database& database, bool is_replica,
@@ -218,6 +262,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "GEOPOS") {
     return HandleGeopos(args);
+  }
+  if (command == "GEODIST") {
+    return HandleGeodist(args);
   }
   if (command == "ZADD") {
     return HandleZadd(args);
@@ -475,6 +522,42 @@ CommandResult CommandProcessor::HandleGeopos(
   }
 
   return RespRaw{std::move(response)};
+}
+
+CommandResult CommandProcessor::HandleGeodist(
+    const std::vector<std::string>& args) {
+  if (args.size() != 4) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "geodist"});
+  }
+
+  bool wrong_type = false;
+  double longitude_a = 0.0;
+  double latitude_a = 0.0;
+  if (!DecodeGeoMember(database_, args[1], args[2], longitude_a, latitude_a,
+                       wrong_type)) {
+    if (wrong_type) {
+      return tl::make_unexpected(
+          CommandError{.code = CommandErrorCode::kWrongType, .command = "geodist"});
+    }
+    return RespNullBulk{};
+  }
+
+  double longitude_b = 0.0;
+  double latitude_b = 0.0;
+  if (!DecodeGeoMember(database_, args[1], args[3], longitude_b, latitude_b,
+                       wrong_type)) {
+    if (wrong_type) {
+      return tl::make_unexpected(
+          CommandError{.code = CommandErrorCode::kWrongType, .command = "geodist"});
+    }
+    return RespNullBulk{};
+  }
+
+  std::ostringstream stream;
+  stream << std::fixed << std::setprecision(4)
+         << GeoDistanceMeters(longitude_a, latitude_a, longitude_b, latitude_b);
+  return RespBulkString{stream.str()};
 }
 
 CommandResult CommandProcessor::HandleZadd(

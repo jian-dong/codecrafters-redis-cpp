@@ -207,6 +207,25 @@ void TestGeoposDecodesCoordinatesFromZsetScores() {
       "GEOPOS should decode coordinates from sorted-set scores");
 }
 
+void TestGeodistReturnsDistanceBetweenLocations() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  Expect(processor.Execute({"GEOADD", "places", "11.5030378", "48.164271", "Munich"}).has_value(),
+         "setup GEOADD Munich should succeed");
+  Expect(processor.Execute({"GEOADD", "places", "2.2944692", "48.8584625", "Paris"}).has_value(),
+         "setup GEOADD Paris should succeed");
+
+  redis::CommandResult result = processor.Execute({"GEODIST", "places", "Munich", "Paris"});
+  Expect(result.has_value(), "GEODIST should succeed");
+  Expect(std::holds_alternative<redis::RespBulkString>(*result),
+         "GEODIST should return a RESP bulk string");
+  Expect(std::get<redis::RespBulkString>(*result).value == "682477.7582",
+         "GEODIST should return the distance in meters");
+  Expect(RespWriter::Write(*result) == "$11\r\n682477.7582\r\n",
+         "GEODIST should encode the distance as a RESP bulk string");
+}
+
 void TestZrankReturnsSortedSetRankAndNilForMissingMembers() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1190,6 +1209,7 @@ int main() {
   TestGeoaddRejectsInvalidCoordinates();
   TestGeoposReturnsZeroCoordinatesOrNil();
   TestGeoposDecodesCoordinatesFromZsetScores();
+  TestGeodistReturnsDistanceBetweenLocations();
   TestZaddCreatesSortedSetAndReturnsAddedCount();
   TestZrankReturnsSortedSetRankAndNilForMissingMembers();
   TestZrangeReturnsSortedSetMembersByIndex();

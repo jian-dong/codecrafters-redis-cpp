@@ -355,7 +355,14 @@ CommandResult CommandProcessor::HandleGeoadd(
         .code = CommandErrorCode::kInvalidGeoCoordinates, .command = "geoadd"});
   }
 
-  return RespInteger{1};
+  const Database::ZAddResult result =
+      database_.ZAdd(args[1], 0.0, "0", args[4]);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "geoadd"});
+  }
+
+  return RespInteger{result.added};
 }
 
 CommandResult CommandProcessor::HandleZadd(

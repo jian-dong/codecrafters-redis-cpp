@@ -29,7 +29,7 @@ std::string EncodeAsRespArray(const std::vector<std::string>& args) {
 
 bool IsWriteCommand(const std::string& cmd) {
   return cmd == "SET" || cmd == "RPUSH" || cmd == "LPUSH" || cmd == "LPOP" ||
-         cmd == "XADD" || cmd == "INCR";
+         cmd == "XADD" || cmd == "INCR" || cmd == "GEOADD";
 }
 
 bool TryParseReplicaAck(const std::vector<std::string>& args, int64_t& offset) {

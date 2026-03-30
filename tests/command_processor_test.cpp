@@ -109,6 +109,14 @@ void TestGeoaddReturnsAddedCount() {
          "GEOADD should report one added location");
   Expect(RespWriter::Write(*result) == ":1\r\n",
          "GEOADD should encode the added-location count as a RESP integer");
+
+  result = processor.Execute({"ZRANGE", "places", "0", "-1"});
+  Expect(result.has_value(), "ZRANGE after GEOADD should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE after GEOADD should return a RESP array");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"Munich"}),
+         "GEOADD should store the location in the sorted set");
 }
 
 void TestGeoaddRejectsInvalidCoordinates() {

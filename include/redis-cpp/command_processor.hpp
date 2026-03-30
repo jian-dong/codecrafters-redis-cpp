@@ -53,6 +53,7 @@ class CommandProcessor {
   CommandResult HandleZrange(const std::vector<std::string>& args);
   CommandResult HandleZcard(const std::vector<std::string>& args);
   CommandResult HandleZscore(const std::vector<std::string>& args);
+  CommandResult HandleZrem(const std::vector<std::string>& args);
   CommandResult HandleXadd(const std::vector<std::string>& args);
   CommandResult HandleXrange(const std::vector<std::string>& args);
   CommandResult HandleXread(const std::vector<std::string>& args);

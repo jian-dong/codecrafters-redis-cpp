@@ -762,6 +762,31 @@ Database::ZScoreResult Database::ZScore(const std::string& key,
   return {};
 }
 
+Database::ZRemResult Database::ZRem(const std::string& key,
+                                    const std::string& member) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<SortedSetValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  std::vector<SortedSetEntry>& entries =
+      std::get<SortedSetValue>(entry->value).entries;
+  const auto it = std::find_if(
+      entries.begin(), entries.end(),
+      [&](const SortedSetEntry& existing) { return existing.member == member; });
+  if (it == entries.end()) {
+    return {};
+  }
+
+  entries.erase(it);
+  return {.removed = 1};
+}
+
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   const auto found = store_.find(key);
   if (found == store_.end()) {

@@ -127,6 +127,11 @@ class Database {
     std::string score;
   };
 
+  struct ZRemResult {
+    bool wrong_type = false;
+    int64_t removed = 0;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -160,6 +165,7 @@ class Database {
   ZRangeResult ZRange(const std::string& key, int64_t start, int64_t stop);
   ZCardResult ZCard(const std::string& key);
   ZScoreResult ZScore(const std::string& key, const std::string& member);
+  ZRemResult ZRem(const std::string& key, const std::string& member);
 
  private:
   struct StringValue {

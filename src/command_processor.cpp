@@ -151,6 +151,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "ZSCORE") {
     return HandleZscore(args);
   }
+  if (command == "ZREM") {
+    return HandleZrem(args);
+  }
   if (command == "XADD") {
     return HandleXadd(args);
   }
@@ -420,6 +423,22 @@ CommandResult CommandProcessor::HandleZscore(
   }
 
   return RespBulkString{result.score};
+}
+
+CommandResult CommandProcessor::HandleZrem(
+    const std::vector<std::string>& args) {
+  if (args.size() != 3) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "zrem"});
+  }
+
+  const Database::ZRemResult result = database_.ZRem(args[1], args[2]);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "zrem"});
+  }
+
+  return RespInteger{result.removed};
 }
 
 CommandResult CommandProcessor::HandleXadd(

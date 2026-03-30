@@ -323,6 +323,42 @@ void TestZscoreReturnsSortedSetMemberScore() {
          "ZSCORE missing key should return a null bulk string");
 }
 
+void TestZremRemovesSortedSetMember() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  Expect(processor.Execute({"ZADD", "zset_key", "80.5", "foo"}).has_value(),
+         "setup ZADD foo should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "50.3", "baz"}).has_value(),
+         "setup ZADD baz should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "80.5", "bar"}).has_value(),
+         "setup ZADD bar should succeed");
+
+  redis::CommandResult result = processor.Execute({"ZREM", "zset_key", "baz"});
+  Expect(result.has_value(), "ZREM baz should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "ZREM should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 1,
+         "ZREM should report one removed member");
+  Expect(RespWriter::Write(*result) == ":1\r\n",
+         "ZREM should encode the removed count as a RESP integer");
+
+  result = processor.Execute({"ZRANGE", "zset_key", "0", "-1"});
+  Expect(result.has_value(), "ZRANGE after ZREM should succeed");
+  Expect(std::holds_alternative<RespArray>(*result),
+         "ZRANGE after ZREM should return a RESP array");
+  Expect(std::get<RespArray>(*result).values ==
+             std::vector<std::string>({"bar", "foo"}),
+         "ZREM should remove the member and keep the remaining sorted order");
+
+  result = processor.Execute({"ZREM", "zset_key", "missing_member"});
+  Expect(result.has_value(), "ZREM missing member should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "ZREM missing member should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 0,
+         "ZREM missing member should report zero removals");
+}
+
 void TestSubscribeTracksChannelsPerClientSession() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1044,6 +1080,7 @@ int main() {
   TestZrangeReturnsSortedSetMembersByIndex();
   TestZcardReturnsSortedSetCardinality();
   TestZscoreReturnsSortedSetMemberScore();
+  TestZremRemovesSortedSetMember();
   TestSubscribeTracksChannelsPerClientSession();
   TestSubscribedModeRejectsDisallowedCommands();
   TestSubscribedModePingUsesPubsubResponse();

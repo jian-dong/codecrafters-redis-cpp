@@ -212,6 +212,68 @@ void TestNewConnectionsRequireAuthAfterDefaultPasswordIsSet() {
   unauthenticated_thread.join();
 }
 
+void TestAuthAuthenticatesConnectionForSubsequentCommands() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  int authenticated_fds[2];
+  Expect(socketpair(AF_UNIX, SOCK_STREAM, 0, authenticated_fds) == 0,
+         "authenticated socketpair should succeed");
+  ClientSession authenticated_session(
+      redis::Socket(redis::UniqueFd(authenticated_fds[0])), processor, nullptr);
+  std::thread authenticated_thread([&]() { authenticated_session.Run(); });
+
+  char buffer[512];
+  const std::string setuser_command =
+      "*4\r\n$3\r\nACL\r\n$7\r\nSETUSER\r\n$7\r\ndefault\r\n$12\r\n>newpassword\r\n";
+  Expect(send(authenticated_fds[1], setuser_command.data(), setuser_command.size(), 0) ==
+             static_cast<ssize_t>(setuser_command.size()),
+         "ACL SETUSER should be written fully on the authenticated connection");
+  ssize_t received = recv(authenticated_fds[1], buffer, sizeof(buffer), 0);
+  Expect(received > 0, "ACL SETUSER should receive a response");
+  Expect(std::string(buffer, buffer + received) == "+OK\r\n",
+         "ACL SETUSER should succeed on the authenticated connection");
+
+  int unauthenticated_fds[2];
+  Expect(socketpair(AF_UNIX, SOCK_STREAM, 0, unauthenticated_fds) == 0,
+         "unauthenticated socketpair should succeed");
+  ClientSession unauthenticated_session(
+      redis::Socket(redis::UniqueFd(unauthenticated_fds[0])), processor, nullptr);
+  std::thread unauthenticated_thread([&]() { unauthenticated_session.Run(); });
+
+  const std::string ping_command = "*1\r\n$4\r\nPING\r\n";
+  Expect(send(unauthenticated_fds[1], ping_command.data(), ping_command.size(), 0) ==
+             static_cast<ssize_t>(ping_command.size()),
+         "PING should be written fully on the unauthenticated connection");
+  received = recv(unauthenticated_fds[1], buffer, sizeof(buffer), 0);
+  Expect(received > 0, "unauthenticated PING should receive a response");
+  Expect(std::string(buffer, buffer + received).starts_with("-NOAUTH"),
+         "unauthenticated PING should return NOAUTH");
+
+  const std::string auth_command =
+      "*3\r\n$4\r\nAUTH\r\n$7\r\ndefault\r\n$11\r\nnewpassword\r\n";
+  Expect(send(unauthenticated_fds[1], auth_command.data(), auth_command.size(), 0) ==
+             static_cast<ssize_t>(auth_command.size()),
+         "AUTH should be written fully on the unauthenticated connection");
+  received = recv(unauthenticated_fds[1], buffer, sizeof(buffer), 0);
+  Expect(received > 0, "AUTH should receive a response");
+  Expect(std::string(buffer, buffer + received) == "+OK\r\n",
+         "AUTH should succeed with the correct password");
+
+  Expect(send(unauthenticated_fds[1], ping_command.data(), ping_command.size(), 0) ==
+             static_cast<ssize_t>(ping_command.size()),
+         "PING should be written fully after AUTH");
+  received = recv(unauthenticated_fds[1], buffer, sizeof(buffer), 0);
+  Expect(received > 0, "authenticated PING should receive a response");
+  Expect(std::string(buffer, buffer + received) == "+PONG\r\n",
+         "PING should succeed after AUTH authenticates the connection");
+
+  close(authenticated_fds[1]);
+  authenticated_thread.join();
+  close(unauthenticated_fds[1]);
+  unauthenticated_thread.join();
+}
+
 void TestZaddCreatesSortedSetAndReturnsAddedCount() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1390,6 +1452,7 @@ int main() {
   TestAclSetuserStoresHashedPasswordAndClearsNopass();
   TestAuthValidatesPasswordAgainstAclHashes();
   TestNewConnectionsRequireAuthAfterDefaultPasswordIsSet();
+  TestAuthAuthenticatesConnectionForSubsequentCommands();
   TestGeoaddReturnsAddedCount();
   TestGeoaddRejectsInvalidCoordinates();
   TestGeoposReturnsZeroCoordinatesOrNil();

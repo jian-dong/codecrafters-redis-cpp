@@ -116,6 +116,11 @@ class Database {
     std::vector<std::string> members;
   };
 
+  struct ZCardResult {
+    bool wrong_type = false;
+    int64_t cardinality = 0;
+  };
+
   void SetString(const std::string& key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
@@ -147,6 +152,7 @@ class Database {
                   const std::string& member);
   ZRankResult ZRank(const std::string& key, const std::string& member);
   ZRangeResult ZRange(const std::string& key, int64_t start, int64_t stop);
+  ZCardResult ZCard(const std::string& key);
 
  private:
   struct StringValue {

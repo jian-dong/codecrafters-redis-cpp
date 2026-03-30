@@ -145,6 +145,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "ZRANGE") {
     return HandleZrange(args);
   }
+  if (command == "ZCARD") {
+    return HandleZcard(args);
+  }
   if (command == "XADD") {
     return HandleXadd(args);
   }
@@ -378,6 +381,22 @@ CommandResult CommandProcessor::HandleZrange(
   }
 
   return RespArray{result.members};
+}
+
+CommandResult CommandProcessor::HandleZcard(
+    const std::vector<std::string>& args) {
+  if (args.size() != 2) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "zcard"});
+  }
+
+  const Database::ZCardResult result = database_.ZCard(args[1]);
+  if (result.wrong_type) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongType, .command = "zcard"});
+  }
+
+  return RespInteger{result.cardinality};
 }
 
 CommandResult CommandProcessor::HandleXadd(

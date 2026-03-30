@@ -721,6 +721,21 @@ Database::ZRangeResult Database::ZRange(const std::string& key, int64_t start,
   return {.members = std::move(members)};
 }
 
+Database::ZCardResult Database::ZCard(const std::string& key) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry* entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return {};
+  }
+
+  if (!std::holds_alternative<SortedSetValue>(entry->value)) {
+    return {.wrong_type = true};
+  }
+
+  return {.cardinality = static_cast<int64_t>(
+              std::get<SortedSetValue>(entry->value).entries.size())};
+}
+
 Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   const auto found = store_.find(key);
   if (found == store_.end()) {

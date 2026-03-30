@@ -230,6 +230,50 @@ void TestZrangeReturnsSortedSetMembersByIndex() {
          "ZRANGE missing key should return an empty array");
 }
 
+void TestZcardReturnsSortedSetCardinality() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  Expect(processor.Execute({"ZADD", "zset_key", "20.0", "zset_member1"}).has_value(),
+         "setup ZADD zset_member1 should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "30.1", "zset_member2"}).has_value(),
+         "setup ZADD zset_member2 should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "40.2", "zset_member3"}).has_value(),
+         "setup ZADD zset_member3 should succeed");
+  Expect(processor.Execute({"ZADD", "zset_key", "50.3", "zset_member4"}).has_value(),
+         "setup ZADD zset_member4 should succeed");
+
+  redis::CommandResult result = processor.Execute({"ZCARD", "zset_key"});
+  Expect(result.has_value(), "ZCARD should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "ZCARD should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 4,
+         "ZCARD should return the number of members in the sorted set");
+  Expect(RespWriter::Write(*result) == ":4\r\n",
+         "ZCARD should encode the cardinality as a RESP integer");
+
+  result = processor.Execute({"ZADD", "zset_key", "100.0", "zset_member1"});
+  Expect(result.has_value(), "updating an existing member should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "updating an existing member should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 0,
+         "updating an existing member should not change cardinality");
+
+  result = processor.Execute({"ZCARD", "zset_key"});
+  Expect(result.has_value(), "ZCARD after update should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "ZCARD after update should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 4,
+         "ZCARD should remain unchanged after updating an existing member");
+
+  result = processor.Execute({"ZCARD", "missing_key"});
+  Expect(result.has_value(), "ZCARD missing key should succeed");
+  Expect(std::holds_alternative<RespInteger>(*result),
+         "ZCARD missing key should return a RESP integer");
+  Expect(std::get<RespInteger>(*result).value == 0,
+         "ZCARD missing key should return zero");
+}
+
 void TestSubscribeTracksChannelsPerClientSession() {
   Database database;
   CommandProcessor processor(database, false);
@@ -949,6 +993,7 @@ int main() {
   TestZaddCreatesSortedSetAndReturnsAddedCount();
   TestZrankReturnsSortedSetRankAndNilForMissingMembers();
   TestZrangeReturnsSortedSetMembersByIndex();
+  TestZcardReturnsSortedSetCardinality();
   TestSubscribeTracksChannelsPerClientSession();
   TestSubscribedModeRejectsDisallowedCommands();
   TestSubscribedModePingUsesPubsubResponse();

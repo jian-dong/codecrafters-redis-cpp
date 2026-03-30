@@ -367,6 +367,8 @@ std::string CommandErrorMessage(const CommandError& error) {
       return "ERR value is not an integer or out of range";
     case CommandErrorCode::kInvalidGeoCoordinates:
       return "ERR invalid longitude,latitude pair";
+    case CommandErrorCode::kWrongPass:
+      return "WRONGPASS invalid username-password pair or user is disabled.";
     case CommandErrorCode::kXaddIdNotGreaterThanZeroZero:
       return "ERR The ID specified in XADD must be greater than 0-0";
     case CommandErrorCode::kXaddIdNotGreaterThanTopItem:
@@ -401,6 +403,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "KEYS") {
     return HandleKeys(args);
+  }
+  if (command == "AUTH") {
+    return HandleAuth(args);
   }
   if (command == "ACL") {
     return HandleAcl(args);
@@ -586,6 +591,33 @@ CommandResult CommandProcessor::HandleKeys(
   }
 
   return RespArray{database_.Keys()};
+}
+
+CommandResult CommandProcessor::HandleAuth(
+    const std::vector<std::string>& args) {
+  if (args.size() != 3) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "auth"});
+  }
+
+  if (args[1] != "default") {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongPass, .command = "auth"});
+  }
+
+  if (default_user_.nopass) {
+    return RespSimpleString{"OK"};
+  }
+
+  const std::string password_hash = Sha256Hex(args[2]);
+  for (const std::string& stored_hash : default_user_.password_hashes) {
+    if (stored_hash == password_hash) {
+      return RespSimpleString{"OK"};
+    }
+  }
+
+  return tl::make_unexpected(
+      CommandError{.code = CommandErrorCode::kWrongPass, .command = "auth"});
 }
 
 CommandResult CommandProcessor::HandleAcl(

@@ -18,6 +18,7 @@ enum class CommandErrorCode {
   kSyntaxError,
   kInvalidInteger,
   kInvalidGeoCoordinates,
+  kWrongPass,
   kXaddIdNotGreaterThanZeroZero,
   kXaddIdNotGreaterThanTopItem,
   kExecWithoutMulti,
@@ -47,6 +48,7 @@ class CommandProcessor {
   CommandResult HandleSet(const std::vector<std::string>& args);
   CommandResult HandleGet(const std::vector<std::string>& args);
   CommandResult HandleKeys(const std::vector<std::string>& args);
+  CommandResult HandleAuth(const std::vector<std::string>& args);
   CommandResult HandleAcl(const std::vector<std::string>& args);
   CommandResult HandleSubscribe(const std::vector<std::string>& args);
   CommandResult HandleType(const std::vector<std::string>& args);

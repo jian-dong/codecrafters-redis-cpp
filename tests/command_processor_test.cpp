@@ -134,6 +134,31 @@ void TestAclSetuserStoresHashedPasswordAndClearsNopass() {
       "ACL GETUSER default should clear nopass and return the SHA-256 password hash");
 }
 
+void TestAuthValidatesPasswordAgainstAclHashes() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  Expect(processor.Execute({"ACL", "SETUSER", "default", ">mypassword"}).has_value(),
+         "setup ACL SETUSER default >mypassword should succeed");
+
+  redis::CommandResult result =
+      processor.Execute({"AUTH", "default", "wrongpassword"});
+  Expect(!result.has_value(), "AUTH with a wrong password should fail");
+  const std::string wrongpass_error =
+      RespWriter::Error(CommandErrorMessage(result.error()));
+  Expect(wrongpass_error.starts_with("-WRONGPASS"),
+         "AUTH with a wrong password should return a WRONGPASS error");
+
+  result = processor.Execute({"AUTH", "default", "mypassword"});
+  Expect(result.has_value(), "AUTH with the correct password should succeed");
+  Expect(std::holds_alternative<RespSimpleString>(*result),
+         "AUTH with the correct password should return a RESP simple string");
+  Expect(std::get<RespSimpleString>(*result).value == "OK",
+         "AUTH with the correct password should return OK");
+  Expect(RespWriter::Write(*result) == "+OK\r\n",
+         "AUTH with the correct password should encode OK as a RESP simple string");
+}
+
 void TestZaddCreatesSortedSetAndReturnsAddedCount() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1310,6 +1335,7 @@ int main() {
   TestAclWhoamiReturnsDefaultUser();
   TestAclGetuserReturnsFlagsArrayForDefaultUser();
   TestAclSetuserStoresHashedPasswordAndClearsNopass();
+  TestAuthValidatesPasswordAgainstAclHashes();
   TestGeoaddReturnsAddedCount();
   TestGeoaddRejectsInvalidCoordinates();
   TestGeoposReturnsZeroCoordinatesOrNil();

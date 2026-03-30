@@ -159,6 +159,59 @@ void TestAuthValidatesPasswordAgainstAclHashes() {
          "AUTH with the correct password should encode OK as a RESP simple string");
 }
 
+void TestNewConnectionsRequireAuthAfterDefaultPasswordIsSet() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  int authenticated_fds[2];
+  Expect(socketpair(AF_UNIX, SOCK_STREAM, 0, authenticated_fds) == 0,
+         "authenticated socketpair should succeed");
+  ClientSession authenticated_session(
+      redis::Socket(redis::UniqueFd(authenticated_fds[0])), processor, nullptr);
+  std::thread authenticated_thread([&]() { authenticated_session.Run(); });
+
+  char buffer[512];
+  const std::string setuser_command =
+      "*4\r\n$3\r\nACL\r\n$7\r\nSETUSER\r\n$7\r\ndefault\r\n$12\r\n>newpassword\r\n";
+  Expect(send(authenticated_fds[1], setuser_command.data(), setuser_command.size(), 0) ==
+             static_cast<ssize_t>(setuser_command.size()),
+         "ACL SETUSER should be written fully on the authenticated connection");
+  ssize_t received = recv(authenticated_fds[1], buffer, sizeof(buffer), 0);
+  Expect(received > 0, "ACL SETUSER should receive a response");
+  Expect(std::string(buffer, buffer + received) == "+OK\r\n",
+         "ACL SETUSER should return OK on the authenticated connection");
+
+  const std::string whoami_command =
+      "*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n";
+  Expect(send(authenticated_fds[1], whoami_command.data(), whoami_command.size(), 0) ==
+             static_cast<ssize_t>(whoami_command.size()),
+         "ACL WHOAMI should be written fully on the authenticated connection");
+  received = recv(authenticated_fds[1], buffer, sizeof(buffer), 0);
+  Expect(received > 0, "ACL WHOAMI should receive a response");
+  Expect(std::string(buffer, buffer + received) == "$7\r\ndefault\r\n",
+         "existing authenticated connections should remain authenticated");
+
+  int unauthenticated_fds[2];
+  Expect(socketpair(AF_UNIX, SOCK_STREAM, 0, unauthenticated_fds) == 0,
+         "unauthenticated socketpair should succeed");
+  ClientSession unauthenticated_session(
+      redis::Socket(redis::UniqueFd(unauthenticated_fds[0])), processor, nullptr);
+  std::thread unauthenticated_thread([&]() { unauthenticated_session.Run(); });
+
+  Expect(send(unauthenticated_fds[1], whoami_command.data(), whoami_command.size(), 0) ==
+             static_cast<ssize_t>(whoami_command.size()),
+         "ACL WHOAMI should be written fully on the unauthenticated connection");
+  received = recv(unauthenticated_fds[1], buffer, sizeof(buffer), 0);
+  Expect(received > 0, "unauthenticated ACL WHOAMI should receive a response");
+  Expect(std::string(buffer, buffer + received).starts_with("-NOAUTH"),
+         "new connections should receive NOAUTH after the default password is set");
+
+  close(authenticated_fds[1]);
+  authenticated_thread.join();
+  close(unauthenticated_fds[1]);
+  unauthenticated_thread.join();
+}
+
 void TestZaddCreatesSortedSetAndReturnsAddedCount() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1336,6 +1389,7 @@ int main() {
   TestAclGetuserReturnsFlagsArrayForDefaultUser();
   TestAclSetuserStoresHashedPasswordAndClearsNopass();
   TestAuthValidatesPasswordAgainstAclHashes();
+  TestNewConnectionsRequireAuthAfterDefaultPasswordIsSet();
   TestGeoaddReturnsAddedCount();
   TestGeoaddRejectsInvalidCoordinates();
   TestGeoposReturnsZeroCoordinatesOrNil();

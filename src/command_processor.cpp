@@ -351,6 +351,11 @@ CommandProcessor::CommandProcessor(Database& database, bool is_replica,
       replica_manager_(replica_manager),
       server_config_(server_config) {}
 
+bool CommandProcessor::DefaultUserStartsAuthenticated() const {
+  std::lock_guard<std::mutex> lock(acl_mutex_);
+  return default_user_.nopass;
+}
+
 std::string CommandErrorMessage(const CommandError& error) {
   switch (error.code) {
     case CommandErrorCode::kUnknownCommand:
@@ -605,11 +610,13 @@ CommandResult CommandProcessor::HandleAuth(
         CommandError{.code = CommandErrorCode::kWrongPass, .command = "auth"});
   }
 
+  const std::string password_hash = Sha256Hex(args[2]);
+
+  std::lock_guard<std::mutex> lock(acl_mutex_);
   if (default_user_.nopass) {
     return RespSimpleString{"OK"};
   }
 
-  const std::string password_hash = Sha256Hex(args[2]);
   for (const std::string& stored_hash : default_user_.password_hashes) {
     if (stored_hash == password_hash) {
       return RespSimpleString{"OK"};
@@ -631,6 +638,7 @@ CommandResult CommandProcessor::HandleAcl(
       return RespNullBulk{};
     }
 
+    std::lock_guard<std::mutex> lock(acl_mutex_);
     return RespRaw{
         EncodeAclGetuserResponse(default_user_.nopass,
                                  default_user_.password_hashes)};
@@ -642,6 +650,7 @@ CommandResult CommandProcessor::HandleAcl(
           CommandError{.code = CommandErrorCode::kSyntaxError, .command = "acl"});
     }
 
+    std::lock_guard<std::mutex> lock(acl_mutex_);
     default_user_.nopass = false;
     default_user_.password_hashes = {Sha256Hex(std::string_view(args[3]).substr(1))};
     return RespSimpleString{"OK"};

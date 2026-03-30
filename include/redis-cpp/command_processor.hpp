@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,7 @@ class CommandProcessor {
                             const ServerConfig* server_config = nullptr);
 
   CommandResult Execute(const std::vector<std::string>& args);
+  bool DefaultUserStartsAuthenticated() const;
 
  private:
   CommandResult HandlePing(const std::vector<std::string>& args);
@@ -86,6 +88,7 @@ class CommandProcessor {
   bool is_replica_ = false;
   ReplicaManager* replica_manager_ = nullptr;
   const ServerConfig* server_config_ = nullptr;
+  mutable std::mutex acl_mutex_;
   AclUserState default_user_;
 };
 

@@ -85,6 +85,10 @@ std::string EncodeSubscribedModePingResponse() {
   return "*2\r\n$4\r\npong\r\n$0\r\n\r\n";
 }
 
+std::string EncodeNoauthResponse() {
+  return RespWriter::Error("NOAUTH Authentication required.");
+}
+
 }  // namespace
 
 ClientSession::ClientSession(Socket socket, CommandProcessor& command_processor,
@@ -93,7 +97,8 @@ ClientSession::ClientSession(Socket socket, CommandProcessor& command_processor,
     : socket_(std::move(socket)),
       command_processor_(command_processor),
       replica_manager_(replica_manager),
-      pubsub_manager_(pubsub_manager) {}
+      pubsub_manager_(pubsub_manager),
+      authenticated_(command_processor.DefaultUserStartsAuthenticated()) {}
 
 ClientSession::~ClientSession() {
   if (pubsub_manager_ == nullptr) {
@@ -153,6 +158,16 @@ void ClientSession::Run() {
           LogError(send_status.error());
         }
         if (!send_status) {
+          return;
+        }
+        continue;
+      }
+
+      if (!authenticated_ && cmd != "AUTH") {
+        const std::string response = EncodeNoauthResponse();
+        Status send_status = socket_.SendAll(response);
+        if (!send_status) {
+          LogError(send_status.error());
           return;
         }
         continue;
@@ -271,6 +286,9 @@ void ClientSession::Run() {
         response = "+QUEUED\r\n";
       } else {
         CommandResult command_result = command_processor_.Execute(args);
+        if (command_result && cmd == "AUTH") {
+          authenticated_ = true;
+        }
         if (!command_result) {
           response =
               RespWriter::Error(CommandErrorMessage(command_result.error()));

@@ -25,6 +25,7 @@ class ClientSession {
   ReplicaManager* replica_manager_;
   PubSubManager* pubsub_manager_;
   RespParser parser_;
+  bool authenticated_ = true;
   bool in_multi_ = false;
   std::vector<std::vector<std::string>> queued_commands_;
   std::unordered_set<std::string> subscribed_channels_;

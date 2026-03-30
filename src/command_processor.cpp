@@ -279,6 +279,9 @@ CommandResult CommandProcessor::Execute(const std::vector<std::string>& args) {
   if (command == "KEYS") {
     return HandleKeys(args);
   }
+  if (command == "ACL") {
+    return HandleAcl(args);
+  }
   if (command == "SUBSCRIBE") {
     return HandleSubscribe(args);
   }
@@ -460,6 +463,21 @@ CommandResult CommandProcessor::HandleKeys(
   }
 
   return RespArray{database_.Keys()};
+}
+
+CommandResult CommandProcessor::HandleAcl(
+    const std::vector<std::string>& args) {
+  if (args.size() != 2) {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kWrongArity, .command = "acl"});
+  }
+
+  if (ToUpperAscii(args[1]) != "WHOAMI") {
+    return tl::make_unexpected(
+        CommandError{.code = CommandErrorCode::kSyntaxError, .command = "acl"});
+  }
+
+  return RespBulkString{"default"};
 }
 
 CommandResult CommandProcessor::HandleSubscribe(

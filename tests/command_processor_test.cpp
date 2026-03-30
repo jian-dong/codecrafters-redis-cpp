@@ -82,6 +82,20 @@ void TestSubscribeReturnsConfirmationFrame() {
          "SUBSCRIBE foo should encode the expected confirmation array");
 }
 
+void TestAclWhoamiReturnsDefaultUser() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result = processor.Execute({"ACL", "WHOAMI"});
+  Expect(result.has_value(), "ACL WHOAMI should succeed");
+  Expect(std::holds_alternative<redis::RespBulkString>(*result),
+         "ACL WHOAMI should return a RESP bulk string");
+  Expect(std::get<redis::RespBulkString>(*result).value == "default",
+         "ACL WHOAMI should return the default user");
+  Expect(RespWriter::Write(*result) == "$7\r\ndefault\r\n",
+         "ACL WHOAMI should encode the default user as a RESP bulk string");
+}
+
 void TestZaddCreatesSortedSetAndReturnsAddedCount() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1255,6 +1269,7 @@ int main() {
   TestReplicaReplconfGetackReturnsAck();
   TestMasterReplconfStillReturnsOk();
   TestSubscribeReturnsConfirmationFrame();
+  TestAclWhoamiReturnsDefaultUser();
   TestGeoaddReturnsAddedCount();
   TestGeoaddRejectsInvalidCoordinates();
   TestGeoposReturnsZeroCoordinatesOrNil();

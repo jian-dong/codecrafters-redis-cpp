@@ -13,6 +13,11 @@
 namespace redis {
 namespace {
 
+constexpr double kMinLongitude = -180.0;
+constexpr double kMaxLongitude = 180.0;
+constexpr double kMinLatitude = -85.05112878;
+constexpr double kMaxLatitude = 85.05112878;
+
 constexpr std::string_view kMasterReplId =
     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
 
@@ -95,6 +100,8 @@ std::string CommandErrorMessage(const CommandError& error) {
       return "ERR syntax error";
     case CommandErrorCode::kInvalidInteger:
       return "ERR value is not an integer or out of range";
+    case CommandErrorCode::kInvalidGeoCoordinates:
+      return "ERR invalid longitude,latitude pair";
     case CommandErrorCode::kXaddIdNotGreaterThanZeroZero:
       return "ERR The ID specified in XADD must be greater than 0-0";
     case CommandErrorCode::kXaddIdNotGreaterThanTopItem:
@@ -333,6 +340,19 @@ CommandResult CommandProcessor::HandleGeoadd(
   if (args.size() != 5) {
     return tl::make_unexpected(
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "geoadd"});
+  }
+
+  double longitude = 0.0;
+  double latitude = 0.0;
+  const bool longitude_valid =
+      ParseDouble(args[2], longitude) && longitude >= kMinLongitude &&
+      longitude <= kMaxLongitude;
+  const bool latitude_valid =
+      ParseDouble(args[3], latitude) && latitude >= kMinLatitude &&
+      latitude <= kMaxLatitude;
+  if (!longitude_valid || !latitude_valid) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kInvalidGeoCoordinates, .command = "geoadd"});
   }
 
   return RespInteger{1};

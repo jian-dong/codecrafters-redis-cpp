@@ -17,6 +17,7 @@ enum class CommandErrorCode {
   kWrongType,
   kSyntaxError,
   kInvalidInteger,
+  kInvalidGeoCoordinates,
   kXaddIdNotGreaterThanZeroZero,
   kXaddIdNotGreaterThanTopItem,
   kExecWithoutMulti,

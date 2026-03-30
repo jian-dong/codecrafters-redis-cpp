@@ -111,6 +111,30 @@ void TestGeoaddReturnsAddedCount() {
          "GEOADD should encode the added-location count as a RESP integer");
 }
 
+void TestGeoaddRejectsInvalidCoordinates() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result =
+      processor.Execute({"GEOADD", "places", "181", "0.3", "test2"});
+  Expect(!result.has_value(), "GEOADD should reject invalid longitude");
+  const std::string longitude_error =
+      RespWriter::Error(CommandErrorMessage(result.error()));
+  Expect(longitude_error.starts_with("-ERR"),
+         "invalid GEOADD longitude should encode as a RESP error");
+  Expect(longitude_error.find("longitude") != std::string::npos,
+         "invalid GEOADD longitude error should mention longitude");
+
+  result = processor.Execute({"GEOADD", "places", "180", "90", "test1"});
+  Expect(!result.has_value(), "GEOADD should reject invalid latitude");
+  const std::string latitude_error =
+      RespWriter::Error(CommandErrorMessage(result.error()));
+  Expect(latitude_error.starts_with("-ERR"),
+         "invalid GEOADD latitude should encode as a RESP error");
+  Expect(latitude_error.find("latitude") != std::string::npos,
+         "invalid GEOADD latitude error should mention latitude");
+}
+
 void TestZrankReturnsSortedSetRankAndNilForMissingMembers() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1091,6 +1115,7 @@ int main() {
   TestMasterReplconfStillReturnsOk();
   TestSubscribeReturnsConfirmationFrame();
   TestGeoaddReturnsAddedCount();
+  TestGeoaddRejectsInvalidCoordinates();
   TestZaddCreatesSortedSetAndReturnsAddedCount();
   TestZrankReturnsSortedSetRankAndNilForMissingMembers();
   TestZrangeReturnsSortedSetMembersByIndex();

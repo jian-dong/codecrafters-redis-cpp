@@ -166,8 +166,8 @@ void TestGeoposReturnsZeroCoordinatesOrNil() {
          "GEOPOS should return a raw RESP frame for nested arrays");
   Expect(
       RespWriter::Write(*result) ==
-          "*2\r\n*2\r\n$1\r\n0\r\n$1\r\n0\r\n*2\r\n$1\r\n0\r\n$1\r\n0\r\n",
-      "GEOPOS should encode existing members as coordinate pairs");
+          "*2\r\n*2\r\n$20\r\n-0.08849412202835083\r\n$18\r\n51.506478141399342\r\n*2\r\n$18\r\n11.503036916255951\r\n$18\r\n48.164270862329779\r\n",
+      "GEOPOS should decode existing members into coordinate pairs");
 
   result = processor.Execute({"GEOPOS", "location_key", "missing_location"});
   Expect(result.has_value(), "GEOPOS missing member should succeed");
@@ -182,6 +182,29 @@ void TestGeoposReturnsZeroCoordinatesOrNil() {
          "GEOPOS missing key should return a raw RESP frame");
   Expect(RespWriter::Write(*result) == "*2\r\n*-1\r\n*-1\r\n",
          "GEOPOS missing key should encode each requested member as null");
+}
+
+void TestGeoposDecodesCoordinatesFromZsetScores() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  Expect(processor.Execute({"ZADD", "location_key", "3663832614298053", "Foo"}).has_value(),
+         "setup ZADD Foo should succeed");
+  Expect(processor.Execute({"ZADD", "location_key", "3876464048901851", "Bar"}).has_value(),
+         "setup ZADD Bar should succeed");
+  Expect(processor.Execute({"ZADD", "location_key", "3468915414364476", "Baz"}).has_value(),
+         "setup ZADD Baz should succeed");
+  Expect(processor.Execute({"ZADD", "location_key", "3781709020344510", "Caz"}).has_value(),
+         "setup ZADD Caz should succeed");
+
+  redis::CommandResult result = processor.Execute({"GEOPOS", "location_key", "Foo"});
+  Expect(result.has_value(), "GEOPOS Foo should succeed");
+  Expect(std::holds_alternative<redis::RespRaw>(*result),
+         "GEOPOS Foo should return a raw RESP frame");
+  Expect(
+      RespWriter::Write(*result) ==
+          "*1\r\n*2\r\n$18\r\n2.2944715619087219\r\n$17\r\n48.85846255040142\r\n",
+      "GEOPOS should decode coordinates from sorted-set scores");
 }
 
 void TestZrankReturnsSortedSetRankAndNilForMissingMembers() {
@@ -1166,6 +1189,7 @@ int main() {
   TestGeoaddReturnsAddedCount();
   TestGeoaddRejectsInvalidCoordinates();
   TestGeoposReturnsZeroCoordinatesOrNil();
+  TestGeoposDecodesCoordinatesFromZsetScores();
   TestZaddCreatesSortedSetAndReturnsAddedCount();
   TestZrankReturnsSortedSetRankAndNilForMissingMembers();
   TestZrangeReturnsSortedSetMembersByIndex();

@@ -2,8 +2,10 @@
 
 #include <chrono>
 #include <cerrno>
+#include <iomanip>
 #include <cstdint>
 #include <optional>
+#include <sstream>
 #include <cstdlib>
 #include <utility>
 #include <vector>
@@ -105,6 +107,43 @@ uint64_t EncodeGeoScore(double longitude, double latitude) {
   }
 
   return score;
+}
+
+std::pair<double, double> DecodeGeoScore(uint64_t score) {
+  double longitude_min = kMinLongitude;
+  double longitude_max = kMaxLongitude;
+  double latitude_min = kMinLatitude;
+  double latitude_max = kMaxLatitude;
+
+  for (int bit = 0; bit < kGeoStepBits; ++bit) {
+    const int longitude_shift = ((kGeoStepBits - 1 - bit) * 2) + 1;
+    const int latitude_shift = (kGeoStepBits - 1 - bit) * 2;
+    const uint64_t longitude_bit = (score >> longitude_shift) & 1ULL;
+    const uint64_t latitude_bit = (score >> latitude_shift) & 1ULL;
+
+    const double longitude_mid = (longitude_min + longitude_max) / 2.0;
+    if (longitude_bit != 0) {
+      longitude_min = longitude_mid;
+    } else {
+      longitude_max = longitude_mid;
+    }
+
+    const double latitude_mid = (latitude_min + latitude_max) / 2.0;
+    if (latitude_bit != 0) {
+      latitude_min = latitude_mid;
+    } else {
+      latitude_max = latitude_mid;
+    }
+  }
+
+  return {(longitude_min + longitude_max) / 2.0,
+          (latitude_min + latitude_max) / 2.0};
+}
+
+std::string FormatGeoCoordinate(double value) {
+  std::ostringstream stream;
+  stream << std::setprecision(17) << value;
+  return stream.str();
 }
 
 }  // namespace
@@ -421,9 +460,18 @@ CommandResult CommandProcessor::HandleGeopos(
       continue;
     }
 
+    double score = 0.0;
+    if (!ParseDouble(result.score, score) || score < 0.0) {
+      response += "*-1\r\n";
+      continue;
+    }
+
+    const auto [longitude, latitude] =
+        DecodeGeoScore(static_cast<uint64_t>(score));
     response += "*2\r\n";
-    response += RespWriter::Write(RespBulkString{"0"});
-    response += RespWriter::Write(RespBulkString{"0"});
+    response +=
+        RespWriter::Write(RespBulkString{FormatGeoCoordinate(longitude)});
+    response += RespWriter::Write(RespBulkString{FormatGeoCoordinate(latitude)});
   }
 
   return RespRaw{std::move(response)};

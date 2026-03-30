@@ -109,6 +109,31 @@ void TestAclGetuserReturnsFlagsArrayForDefaultUser() {
          "ACL GETUSER default should return [\"flags\", [\"nopass\"], \"passwords\", []]");
 }
 
+void TestAclSetuserStoresHashedPasswordAndClearsNopass() {
+  Database database;
+  CommandProcessor processor(database, false);
+
+  redis::CommandResult result =
+      processor.Execute({"ACL", "SETUSER", "default", ">mypassword"});
+  Expect(result.has_value(), "ACL SETUSER default >mypassword should succeed");
+  Expect(std::holds_alternative<RespSimpleString>(*result),
+         "ACL SETUSER should return a RESP simple string");
+  Expect(std::get<RespSimpleString>(*result).value == "OK",
+         "ACL SETUSER should return OK");
+  Expect(RespWriter::Write(*result) == "+OK\r\n",
+         "ACL SETUSER should encode OK as a RESP simple string");
+
+  result = processor.Execute({"ACL", "GETUSER", "default"});
+  Expect(result.has_value(),
+         "ACL GETUSER default should succeed after setting a password");
+  Expect(std::holds_alternative<redis::RespRaw>(*result),
+         "ACL GETUSER default should return a raw RESP frame after setting a password");
+  Expect(
+      RespWriter::Write(*result) ==
+          "*4\r\n$5\r\nflags\r\n*0\r\n$9\r\npasswords\r\n*1\r\n$64\r\n89e01536ac207279409d4de1e5253e01f4a1769e696db0d6062ca9b8f56767c8\r\n",
+      "ACL GETUSER default should clear nopass and return the SHA-256 password hash");
+}
+
 void TestZaddCreatesSortedSetAndReturnsAddedCount() {
   Database database;
   CommandProcessor processor(database, false);
@@ -1284,6 +1309,7 @@ int main() {
   TestSubscribeReturnsConfirmationFrame();
   TestAclWhoamiReturnsDefaultUser();
   TestAclGetuserReturnsFlagsArrayForDefaultUser();
+  TestAclSetuserStoresHashedPasswordAndClearsNopass();
   TestGeoaddReturnsAddedCount();
   TestGeoaddRejectsInvalidCoordinates();
   TestGeoposReturnsZeroCoordinatesOrNil();

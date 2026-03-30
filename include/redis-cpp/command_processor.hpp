@@ -75,10 +75,16 @@ class CommandProcessor {
   CommandResult HandleReplconf(const std::vector<std::string>& args);
   CommandResult HandleWait(const std::vector<std::string>& args);
 
+  struct AclUserState {
+    bool nopass = true;
+    std::vector<std::string> password_hashes;
+  };
+
   Database& database_;
   bool is_replica_ = false;
   ReplicaManager* replica_manager_ = nullptr;
   const ServerConfig* server_config_ = nullptr;
+  AclUserState default_user_;
 };
 
 }  // namespace redis

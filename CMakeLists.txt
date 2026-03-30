@@ -21,11 +21,13 @@ target_link_libraries(redis PRIVATE Threads::Threads)
 
 if(REDIS_BUILD_TESTS)
   enable_testing()
+  find_package(GTest CONFIG REQUIRED)
 
   add_executable(redis_tests tests/command_processor_test.cpp ${REDIS_SOURCES})
   target_include_directories(redis_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(redis_tests PRIVATE asio asio::asio)
   target_link_libraries(redis_tests PRIVATE Threads::Threads)
+  target_link_libraries(redis_tests PRIVATE GTest::gtest GTest::gtest_main)
 
   add_test(NAME redis_tests COMMAND redis_tests)
 endif()

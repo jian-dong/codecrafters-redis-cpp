@@ -1,6 +1,7 @@
 {
   "dependencies": [
     "asio",
+    "gtest",
     "pthreads"
   ]
 }

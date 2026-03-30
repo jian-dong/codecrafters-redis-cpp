@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include <gtest/gtest.h>
+
 #include "redis-cpp/client_session.hpp"
 #include "redis-cpp/command_processor.hpp"
 #include "redis-cpp/pubsub_manager.hpp"
@@ -33,13 +35,10 @@ using redis::RespWriter;
 using redis::ServerConfig;
 
 void Expect(bool condition, const std::string& message) {
-  if (!condition) {
-    std::cerr << message << "\n";
-    std::exit(1);
-  }
+  ASSERT_TRUE(condition) << message;
 }
 
-void TestReplicaReplconfGetackReturnsAck() {
+TEST(CommandProcessorTest, ReplicaReplconfGetackReturnsAck) {
   Database database;
   CommandProcessor processor(database, true);
 
@@ -57,7 +56,7 @@ void TestReplicaReplconfGetackReturnsAck() {
          "replica REPLCONF GETACK should encode as the expected RESP array");
 }
 
-void TestMasterReplconfStillReturnsOk() {
+TEST(CommandProcessorTest, MasterReplconfStillReturnsOk) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -69,7 +68,7 @@ void TestMasterReplconfStillReturnsOk() {
          "master REPLCONF GETACK should return OK");
 }
 
-void TestSubscribeReturnsConfirmationFrame() {
+TEST(CommandProcessorTest, SubscribeReturnsConfirmationFrame) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -82,7 +81,7 @@ void TestSubscribeReturnsConfirmationFrame() {
          "SUBSCRIBE foo should encode the expected confirmation array");
 }
 
-void TestAclWhoamiReturnsDefaultUser() {
+TEST(CommandProcessorTest, AclWhoamiReturnsDefaultUser) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -96,7 +95,7 @@ void TestAclWhoamiReturnsDefaultUser() {
          "ACL WHOAMI should encode the default user as a RESP bulk string");
 }
 
-void TestAclGetuserReturnsFlagsArrayForDefaultUser() {
+TEST(CommandProcessorTest, AclGetuserReturnsFlagsArrayForDefaultUser) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -109,7 +108,7 @@ void TestAclGetuserReturnsFlagsArrayForDefaultUser() {
          "ACL GETUSER default should return [\"flags\", [\"nopass\"], \"passwords\", []]");
 }
 
-void TestAclSetuserStoresHashedPasswordAndClearsNopass() {
+TEST(CommandProcessorTest, AclSetuserStoresHashedPasswordAndClearsNopass) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -134,7 +133,7 @@ void TestAclSetuserStoresHashedPasswordAndClearsNopass() {
       "ACL GETUSER default should clear nopass and return the SHA-256 password hash");
 }
 
-void TestAuthValidatesPasswordAgainstAclHashes() {
+TEST(CommandProcessorTest, AuthValidatesPasswordAgainstAclHashes) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -159,7 +158,7 @@ void TestAuthValidatesPasswordAgainstAclHashes() {
          "AUTH with the correct password should encode OK as a RESP simple string");
 }
 
-void TestNewConnectionsRequireAuthAfterDefaultPasswordIsSet() {
+TEST(CommandProcessorTest, NewConnectionsRequireAuthAfterDefaultPasswordIsSet) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -212,7 +211,7 @@ void TestNewConnectionsRequireAuthAfterDefaultPasswordIsSet() {
   unauthenticated_thread.join();
 }
 
-void TestAuthAuthenticatesConnectionForSubsequentCommands() {
+TEST(CommandProcessorTest, AuthAuthenticatesConnectionForSubsequentCommands) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -274,7 +273,7 @@ void TestAuthAuthenticatesConnectionForSubsequentCommands() {
   unauthenticated_thread.join();
 }
 
-void TestZaddCreatesSortedSetAndReturnsAddedCount() {
+TEST(CommandProcessorTest, ZaddCreatesSortedSetAndReturnsAddedCount) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -289,7 +288,7 @@ void TestZaddCreatesSortedSetAndReturnsAddedCount() {
          "ZADD should encode the added-member count as a RESP integer");
 }
 
-void TestGeoaddReturnsAddedCount() {
+TEST(CommandProcessorTest, GeoaddReturnsAddedCount) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -319,7 +318,7 @@ void TestGeoaddReturnsAddedCount() {
          "GEOADD should store the correct geospatial score");
 }
 
-void TestGeoaddRejectsInvalidCoordinates() {
+TEST(CommandProcessorTest, GeoaddRejectsInvalidCoordinates) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -343,7 +342,7 @@ void TestGeoaddRejectsInvalidCoordinates() {
          "invalid GEOADD latitude error should mention latitude");
 }
 
-void TestGeoposReturnsZeroCoordinatesOrNil() {
+TEST(CommandProcessorTest, GeoposReturnsZeroCoordinatesOrNil) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -377,7 +376,7 @@ void TestGeoposReturnsZeroCoordinatesOrNil() {
          "GEOPOS missing key should encode each requested member as null");
 }
 
-void TestGeoposDecodesCoordinatesFromZsetScores() {
+TEST(CommandProcessorTest, GeoposDecodesCoordinatesFromZsetScores) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -400,7 +399,7 @@ void TestGeoposDecodesCoordinatesFromZsetScores() {
       "GEOPOS should decode coordinates from sorted-set scores");
 }
 
-void TestGeodistReturnsDistanceBetweenLocations() {
+TEST(CommandProcessorTest, GeodistReturnsDistanceBetweenLocations) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -419,7 +418,7 @@ void TestGeodistReturnsDistanceBetweenLocations() {
          "GEODIST should encode the distance as a RESP bulk string");
 }
 
-void TestGeosearchReturnsMembersWithinRadius() {
+TEST(CommandProcessorTest, GeosearchReturnsMembersWithinRadius) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -468,7 +467,7 @@ void TestGeosearchReturnsMembersWithinRadius() {
          "GEOSEARCH missing key should return an empty array");
 }
 
-void TestZrankReturnsSortedSetRankAndNilForMissingMembers() {
+TEST(CommandProcessorTest, ZrankReturnsSortedSetRankAndNilForMissingMembers) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -512,7 +511,7 @@ void TestZrankReturnsSortedSetRankAndNilForMissingMembers() {
          "ZRANK missing key should return a null bulk string");
 }
 
-void TestZrangeReturnsSortedSetMembersByIndex() {
+TEST(CommandProcessorTest, ZrangeReturnsSortedSetMembersByIndex) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -602,7 +601,7 @@ void TestZrangeReturnsSortedSetMembersByIndex() {
          "ZRANGE missing key should return an empty array");
 }
 
-void TestZcardReturnsSortedSetCardinality() {
+TEST(CommandProcessorTest, ZcardReturnsSortedSetCardinality) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -646,7 +645,7 @@ void TestZcardReturnsSortedSetCardinality() {
          "ZCARD missing key should return zero");
 }
 
-void TestZscoreReturnsSortedSetMemberScore() {
+TEST(CommandProcessorTest, ZscoreReturnsSortedSetMemberScore) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -695,7 +694,7 @@ void TestZscoreReturnsSortedSetMemberScore() {
          "ZSCORE missing key should return a null bulk string");
 }
 
-void TestZremRemovesSortedSetMember() {
+TEST(CommandProcessorTest, ZremRemovesSortedSetMember) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -731,7 +730,7 @@ void TestZremRemovesSortedSetMember() {
          "ZREM missing member should report zero removals");
 }
 
-void TestSubscribeTracksChannelsPerClientSession() {
+TEST(CommandProcessorTest, SubscribeTracksChannelsPerClientSession) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -788,7 +787,7 @@ void TestSubscribeTracksChannelsPerClientSession() {
          "subscribed channel counts should be maintained per client");
 }
 
-void TestSubscribedModeRejectsDisallowedCommands() {
+TEST(CommandProcessorTest, SubscribedModeRejectsDisallowedCommands) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -839,7 +838,7 @@ void TestSubscribedModeRejectsDisallowedCommands() {
   session_thread.join();
 }
 
-void TestSubscribedModePingUsesPubsubResponse() {
+TEST(CommandProcessorTest, SubscribedModePingUsesPubsubResponse) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -886,7 +885,7 @@ void TestSubscribedModePingUsesPubsubResponse() {
          "PING outside subscribed mode should keep the normal response");
 }
 
-void TestPublishReturnsSubscribedClientCount() {
+TEST(CommandProcessorTest, PublishReturnsSubscribedClientCount) {
   Database database;
   CommandProcessor processor(database, false);
   PubSubManager pubsub_manager;
@@ -990,7 +989,7 @@ void TestPublishReturnsSubscribedClientCount() {
   stop_client(publisher);
 }
 
-void TestUnsubscribeRemovesChannelAndStopsDelivery() {
+TEST(CommandProcessorTest, UnsubscribeRemovesChannelAndStopsDelivery) {
   Database database;
   CommandProcessor processor(database, false);
   PubSubManager pubsub_manager;
@@ -1098,7 +1097,7 @@ void TestUnsubscribeRemovesChannelAndStopsDelivery() {
   stop_client(publisher);
 }
 
-void TestWaitReturnsZeroImmediatelyWithoutReplicas() {
+TEST(CommandProcessorTest, WaitReturnsZeroImmediatelyWithoutReplicas) {
   Database database;
   CommandProcessor processor(database, false);
 
@@ -1112,7 +1111,7 @@ void TestWaitReturnsZeroImmediatelyWithoutReplicas() {
          "WAIT 0 60000 should encode as :0");
 }
 
-void TestWaitReturnsConnectedReplicaCount() {
+TEST(CommandProcessorTest, WaitReturnsConnectedReplicaCount) {
   Database database;
   ReplicaManager replica_manager;
   CommandProcessor processor(database, false, &replica_manager);
@@ -1138,7 +1137,7 @@ void TestWaitReturnsConnectedReplicaCount() {
   close(replica_sockets[1]);
 }
 
-void TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite() {
+TEST(CommandProcessorTest, WaitBlocksUntilReplicaAcknowledgesPreviousWrite) {
   Database database;
   ReplicaManager replica_manager;
   CommandProcessor processor(database, false, &replica_manager);
@@ -1187,7 +1186,7 @@ void TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite() {
   close(replica_sockets[1]);
 }
 
-void TestConfigGetDirReturnsConfiguredDirectory() {
+TEST(CommandProcessorTest, ConfigGetDirReturnsConfiguredDirectory) {
   Database database;
   ServerConfig config;
   config.dir = "/tmp/redis-files";
@@ -1207,7 +1206,7 @@ void TestConfigGetDirReturnsConfiguredDirectory() {
          "CONFIG GET dir should encode as the expected RESP array");
 }
 
-void TestConfigGetDbfilenameReturnsConfiguredFilename() {
+TEST(CommandProcessorTest, ConfigGetDbfilenameReturnsConfiguredFilename) {
   Database database;
   ServerConfig config;
   config.dbfilename = "dump.rdb";
@@ -1228,7 +1227,7 @@ void TestConfigGetDbfilenameReturnsConfiguredFilename() {
          "CONFIG GET dbfilename should encode as the expected RESP array");
 }
 
-void TestKeysReturnsStoredKeys() {
+TEST(CommandProcessorTest, KeysReturnsStoredKeys) {
   Database database;
   database.SetString("foo", "123");
   CommandProcessor processor(database, false);
@@ -1245,7 +1244,7 @@ void TestKeysReturnsStoredKeys() {
          "KEYS * should encode the key as a RESP array");
 }
 
-void TestRdbLoaderImportsSingleStringKey() {
+TEST(CommandProcessorTest, RdbLoaderImportsSingleStringKey) {
   Database database;
   ServerConfig config;
 
@@ -1285,7 +1284,7 @@ void TestRdbLoaderImportsSingleStringKey() {
   std::filesystem::remove(config.dir);
 }
 
-void TestRdbLoaderMakesLoadedValueAvailableToGet() {
+TEST(CommandProcessorTest, RdbLoaderMakesLoadedValueAvailableToGet) {
   Database database;
   ServerConfig config;
 
@@ -1326,7 +1325,7 @@ void TestRdbLoaderMakesLoadedValueAvailableToGet() {
   std::filesystem::remove(config.dir);
 }
 
-void TestRdbLoaderImportsMultipleStringValues() {
+TEST(CommandProcessorTest, RdbLoaderImportsMultipleStringValues) {
   Database database;
   ServerConfig config;
 
@@ -1379,7 +1378,7 @@ void AppendLittleEndian64(std::vector<unsigned char>& bytes, uint64_t value) {
   }
 }
 
-void TestRdbLoaderRespectsExpiredAndLiveKeys() {
+TEST(CommandProcessorTest, RdbLoaderRespectsExpiredAndLiveKeys) {
   Database database;
   ServerConfig config;
 
@@ -1442,43 +1441,3 @@ void TestRdbLoaderRespectsExpiredAndLiveKeys() {
 }
 
 }  // namespace
-
-int main() {
-  TestReplicaReplconfGetackReturnsAck();
-  TestMasterReplconfStillReturnsOk();
-  TestSubscribeReturnsConfirmationFrame();
-  TestAclWhoamiReturnsDefaultUser();
-  TestAclGetuserReturnsFlagsArrayForDefaultUser();
-  TestAclSetuserStoresHashedPasswordAndClearsNopass();
-  TestAuthValidatesPasswordAgainstAclHashes();
-  TestNewConnectionsRequireAuthAfterDefaultPasswordIsSet();
-  TestAuthAuthenticatesConnectionForSubsequentCommands();
-  TestGeoaddReturnsAddedCount();
-  TestGeoaddRejectsInvalidCoordinates();
-  TestGeoposReturnsZeroCoordinatesOrNil();
-  TestGeoposDecodesCoordinatesFromZsetScores();
-  TestGeodistReturnsDistanceBetweenLocations();
-  TestGeosearchReturnsMembersWithinRadius();
-  TestZaddCreatesSortedSetAndReturnsAddedCount();
-  TestZrankReturnsSortedSetRankAndNilForMissingMembers();
-  TestZrangeReturnsSortedSetMembersByIndex();
-  TestZcardReturnsSortedSetCardinality();
-  TestZscoreReturnsSortedSetMemberScore();
-  TestZremRemovesSortedSetMember();
-  TestSubscribeTracksChannelsPerClientSession();
-  TestSubscribedModeRejectsDisallowedCommands();
-  TestSubscribedModePingUsesPubsubResponse();
-  TestPublishReturnsSubscribedClientCount();
-  TestUnsubscribeRemovesChannelAndStopsDelivery();
-  TestWaitReturnsZeroImmediatelyWithoutReplicas();
-  TestWaitReturnsConnectedReplicaCount();
-  TestWaitBlocksUntilReplicaAcknowledgesPreviousWrite();
-  TestConfigGetDirReturnsConfiguredDirectory();
-  TestConfigGetDbfilenameReturnsConfiguredFilename();
-  TestKeysReturnsStoredKeys();
-  TestRdbLoaderImportsSingleStringKey();
-  TestRdbLoaderMakesLoadedValueAvailableToGet();
-  TestRdbLoaderImportsMultipleStringValues();
-  TestRdbLoaderRespectsExpiredAndLiveKeys();
-  return 0;
-}

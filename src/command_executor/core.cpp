@@ -14,6 +14,12 @@ namespace {
 constexpr std::string_view kMasterReplId =
     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
 
+bool IsMutatingCommand(const std::string& command) {
+  return command == "SET" || command == "RPUSH" || command == "LPUSH" ||
+         command == "LPOP" || command == "XADD" || command == "INCR" ||
+         command == "GEOADD" || command == "ZADD" || command == "ZREM";
+}
+
 const std::string& GetEmptyRdb() {
   static const std::string rdb = []() {
     // Empty RDB file (Redis 7.2 format)
@@ -81,6 +87,11 @@ CommandResult CommandExecutor::Execute(const std::vector<std::string>& args) {
   }
 
   const std::string command = ToUpperAscii(args[0]);
+  std::unique_lock<std::recursive_mutex> transaction_lock(transaction_mutex_,
+                                                           std::defer_lock);
+  if (IsMutatingCommand(command)) {
+    transaction_lock.lock();
+  }
   if (command == "PING") {
     return HandlePing(args);
   }
@@ -207,6 +218,29 @@ CommandResult CommandExecutor::Execute(const std::vector<std::string>& args) {
 
   return tl::make_unexpected(CommandError{
       .code = CommandErrorCode::kUnknownCommand, .command = args[0]});
+}
+
+uint64_t CommandExecutor::GetKeyVersion(const std::string& key) {
+  std::lock_guard<std::recursive_mutex> lock(transaction_mutex_);
+  return database_.KeyVersion(key);
+}
+
+TransactionExecution CommandExecutor::ExecuteTransaction(
+    const std::vector<std::vector<std::string>>& commands,
+    const std::unordered_map<std::string, uint64_t>& watched_key_versions) {
+  std::lock_guard<std::recursive_mutex> lock(transaction_mutex_);
+  for (const auto& [key, watched_version] : watched_key_versions) {
+    if (database_.KeyVersion(key) != watched_version) {
+      return {.aborted = true};
+    }
+  }
+
+  TransactionExecution execution;
+  execution.results.reserve(commands.size());
+  for (const std::vector<std::string>& command : commands) {
+    execution.results.push_back(Execute(command));
+  }
+  return execution;
 }
 
 CommandResult CommandExecutor::HandlePing(const std::vector<std::string>& args) {

@@ -9,6 +9,20 @@ using redis::Database;
 using redis::RespSimpleString;
 using redis::RespWriter;
 
+std::string ExchangeCommand(int fd, const std::vector<std::string>& args) {
+  std::string encoded = "*" + std::to_string(args.size()) + "\r\n";
+  for (const std::string& arg : args) {
+    encoded += "$" + std::to_string(arg.size()) + "\r\n" + arg + "\r\n";
+  }
+
+  EXPECT_EQ(send(fd, encoded.data(), encoded.size(), 0),
+            static_cast<ssize_t>(encoded.size()));
+  char buffer[512];
+  const ssize_t received = recv(fd, buffer, sizeof(buffer), 0);
+  EXPECT_GT(received, 0);
+  return received > 0 ? std::string(buffer, buffer + received) : std::string{};
+}
+
 TEST(TransactionTest, WatchSingleKeyReturnsOk) {
   Database database;
   CommandExecutor executor(database);
@@ -105,6 +119,82 @@ TEST(TransactionTest, WatchInsideMultiReturnsError) {
 
   close(fds[1]);
   session_thread.join();
+}
+
+TEST(TransactionTest, ExecAbortsWhenWatchedKeyWasTouched) {
+  Database database;
+  CommandExecutor executor(database);
+  int first_fds[2];
+  int second_fds[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, first_fds), 0);
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, second_fds), 0);
+
+  ClientSession first_session(
+      redis::Socket(redis::UniqueFd(first_fds[0])), executor);
+  ClientSession second_session(
+      redis::Socket(redis::UniqueFd(second_fds[0])), executor);
+  std::thread first_thread([&]() { first_session.Run(); });
+  std::thread second_thread([&]() { second_session.Run(); });
+
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "foo", "100"}),
+            "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "bar", "200"}),
+            "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"WATCH", "foo"}), "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "bar", "300"}),
+            "+QUEUED\r\n");
+
+  EXPECT_EQ(ExchangeCommand(second_fds[1], {"SET", "foo", "999"}),
+            "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(second_fds[1], {"SET", "foo", "100"}),
+            "+OK\r\n");
+
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"EXEC"}), "*-1\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"GET", "bar"}),
+            "$3\r\n200\r\n");
+
+  close(first_fds[1]);
+  close(second_fds[1]);
+  first_thread.join();
+  second_thread.join();
+}
+
+TEST(TransactionTest, ExecRunsWhenOnlyUnwatchedKeysWereTouched) {
+  Database database;
+  CommandExecutor executor(database);
+  int first_fds[2];
+  int second_fds[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, first_fds), 0);
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, second_fds), 0);
+
+  ClientSession first_session(
+      redis::Socket(redis::UniqueFd(first_fds[0])), executor);
+  ClientSession second_session(
+      redis::Socket(redis::UniqueFd(second_fds[0])), executor);
+  std::thread first_thread([&]() { first_session.Run(); });
+  std::thread second_thread([&]() { second_session.Run(); });
+
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "baz", "100"}),
+            "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "caz", "200"}),
+            "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"WATCH", "baz"}), "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "caz", "400"}),
+            "+QUEUED\r\n");
+
+  EXPECT_EQ(ExchangeCommand(second_fds[1], {"SET", "caz", "300"}),
+            "+OK\r\n");
+
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"EXEC"}), "*1\r\n+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(second_fds[1], {"GET", "caz"}),
+            "$3\r\n400\r\n");
+
+  close(first_fds[1]);
+  close(second_fds[1]);
+  first_thread.join();
+  second_thread.join();
 }
 
 }  // namespace

@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "redis-cpp/database.hpp"
@@ -34,6 +35,11 @@ struct CommandError {
 
 using CommandResult = tl::expected<RespValue, CommandError>;
 
+struct TransactionExecution {
+  bool aborted = false;
+  std::vector<CommandResult> results;
+};
+
 std::string CommandErrorMessage(const CommandError& error);
 
 class CommandExecutor {
@@ -43,6 +49,10 @@ class CommandExecutor {
                            const ServerConfig* server_config = nullptr);
 
   CommandResult Execute(const std::vector<std::string>& args);
+  uint64_t GetKeyVersion(const std::string& key);
+  TransactionExecution ExecuteTransaction(
+      const std::vector<std::vector<std::string>>& commands,
+      const std::unordered_map<std::string, uint64_t>& watched_key_versions);
   bool DefaultUserStartsAuthenticated() const;
 
  private:
@@ -96,6 +106,7 @@ class CommandExecutor {
   ReplicaManager* replica_manager_ = nullptr;
   const ServerConfig* server_config_ = nullptr;
   mutable std::mutex acl_mutex_;
+  std::recursive_mutex transaction_mutex_;
   AclUserState default_user_;
 };
 

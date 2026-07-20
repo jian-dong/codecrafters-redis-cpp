@@ -197,7 +197,8 @@ void ClientSession::Run() {
           response =
               RespWriter::Error(CommandErrorMessage(command_result.error()));
         } else {
-          watched_keys_.insert(args[1]);
+          watched_key_versions_.try_emplace(
+              args[1], command_executor_.GetKeyVersion(args[1]));
           response = RespWriter::Write(*command_result);
         }
       } else if (cmd == "PUBLISH" && args.size() == 3 && pubsub_manager_ != nullptr) {
@@ -289,19 +290,27 @@ void ClientSession::Run() {
         return;
       } else if (cmd == "EXEC" && in_multi_) {
         in_multi_ = false;
-        response = "*" + std::to_string(queued_commands_.size()) + "\r\n";
-        for (const std::vector<std::string>& queued_args : queued_commands_) {
-          CommandResult command_result = command_executor_.Execute(queued_args);
-          if (!command_result) {
-            response += RespWriter::Error(CommandErrorMessage(command_result.error()));
-          } else {
-            response += RespWriter::Write(*command_result);
+        TransactionExecution execution = command_executor_.ExecuteTransaction(
+            queued_commands_, watched_key_versions_);
+        if (execution.aborted) {
+          response = RespWriter::Write(RespNullArray{});
+        } else {
+          response = "*" + std::to_string(execution.results.size()) + "\r\n";
+          for (const CommandResult& command_result : execution.results) {
+            if (!command_result) {
+              response +=
+                  RespWriter::Error(CommandErrorMessage(command_result.error()));
+            } else {
+              response += RespWriter::Write(*command_result);
+            }
           }
         }
         queued_commands_.clear();
+        watched_key_versions_.clear();
       } else if (cmd == "DISCARD" && in_multi_) {
         in_multi_ = false;
         queued_commands_.clear();
+        watched_key_versions_.clear();
         response = "+OK\r\n";
       } else if (in_multi_) {
         queued_commands_.push_back(args);

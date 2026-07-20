@@ -172,6 +172,7 @@ class Database {
   ZScoreResult ZScore(const std::string& key, const std::string& member);
   ZRemResult ZRem(const std::string& key, const std::string& member);
   ZEntriesResult ZEntries(const std::string& key);
+  uint64_t KeyVersion(const std::string& key);
 
  private:
   struct StringValue {
@@ -225,6 +226,7 @@ class Database {
                         std::chrono::steady_clock::time_point now);
 
   std::unordered_map<std::string, Entry> store_;
+  std::unordered_map<std::string, uint64_t> key_versions_;
   std::mutex mutex_;
   std::condition_variable list_change_cv_;
   std::condition_variable stream_change_cv_;

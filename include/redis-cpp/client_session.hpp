@@ -6,6 +6,7 @@
 #include "redis-cpp/resp.hpp"
 #include "redis-cpp/socket.hpp"
 
+#include <unordered_map>
 #include <unordered_set>
 
 namespace redis {
@@ -30,7 +31,7 @@ class ClientSession {
   bool authenticated_ = true;
   bool in_multi_ = false;
   std::vector<std::vector<std::string>> queued_commands_;
-  std::unordered_set<std::string> watched_keys_;
+  std::unordered_map<std::string, uint64_t> watched_key_versions_;
   std::unordered_set<std::string> subscribed_channels_;
   std::unordered_set<std::string> subscribed_patterns_;
 };

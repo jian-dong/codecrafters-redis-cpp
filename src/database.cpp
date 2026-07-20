@@ -36,6 +36,7 @@ void Database::SetString(const std::string& key, std::string value,
 
   std::lock_guard<std::mutex> lock(mutex_);
   store_[key] = std::move(entry);
+  ++key_versions_[key];
 }
 
 Database::StringLookup Database::GetString(const std::string& key) {
@@ -64,6 +65,7 @@ std::vector<std::string> Database::Keys() {
 
   for (auto it = store_.begin(); it != store_.end();) {
     if (IsExpired(it->second, now)) {
+      ++key_versions_[it->first];
       it = store_.erase(it);
       continue;
     }
@@ -108,6 +110,7 @@ Database::ListMutationResult Database::PushRight(
     std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
     list.insert(list.end(), values.begin(), values.end());
     size = static_cast<int64_t>(list.size());
+    ++key_versions_[key];
   }
 
   list_change_cv_.notify_all();
@@ -138,6 +141,7 @@ Database::ListMutationResult Database::PushLeft(
       list.insert(list.begin(), value);
     }
     size = static_cast<int64_t>(list.size());
+    ++key_versions_[key];
   }
 
   list_change_cv_.notify_all();
@@ -219,6 +223,7 @@ Database::ListPopResult Database::PopLeft(const std::string& key) {
 
   std::string value = list.front();
   list.erase(list.begin());
+  ++key_versions_[key];
   return {
       .found = true,
       .value = std::move(value),
@@ -247,6 +252,9 @@ Database::ListPopManyResult Database::PopLeft(const std::string& key,
   }
   list.erase(list.begin(),
              list.begin() + static_cast<std::ptrdiff_t>(pop_count));
+  if (pop_count > 0) {
+    ++key_versions_[key];
+  }
 
   return {.values = std::move(values)};
 }
@@ -295,6 +303,7 @@ Database::BlockingPopResult Database::BlockingPopLeft(
 
   std::string value = list.front();
   list.erase(list.begin());
+  ++key_versions_[key];
 
   return {
       .found = true,
@@ -378,6 +387,7 @@ Database::StreamAddResult Database::XAdd(
         .id = std::move(id),
         .fields = fields,
     });
+    ++key_versions_[key];
 
     result = {.status = StreamAddResult::Status::kOk, .id = entries.back().id};
   }
@@ -604,6 +614,7 @@ Database::IncrResult Database::Incr(const std::string& key) {
     std::get<StringValue>(entry->value).value = new_str;
     entry->expires_at.reset();
   }
+  ++key_versions_[key];
 
   return {.value = new_value};
 }
@@ -642,6 +653,7 @@ Database::ZAddResult Database::ZAdd(const std::string& key, double score,
                 }
                 return lhs.member < rhs.member;
               });
+    ++key_versions_[key];
     return {.added = 0};
   }
 
@@ -654,6 +666,7 @@ Database::ZAddResult Database::ZAdd(const std::string& key, double score,
               }
               return lhs.member < rhs.member;
             });
+  ++key_versions_[key];
   return {.added = 1};
 }
 
@@ -784,7 +797,15 @@ Database::ZRemResult Database::ZRem(const std::string& key,
   }
 
   entries.erase(it);
+  ++key_versions_[key];
   return {.removed = 1};
+}
+
+uint64_t Database::KeyVersion(const std::string& key) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  (void)FindLiveEntryLocked(key);
+  const auto found = key_versions_.find(key);
+  return found == key_versions_.end() ? 0 : found->second;
 }
 
 Database::ZEntriesResult Database::ZEntries(const std::string& key) {
@@ -818,6 +839,7 @@ Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   const auto now = std::chrono::steady_clock::now();
   if (IsExpired(found->second, now)) {
     store_.erase(found);
+    ++key_versions_[key];
     return nullptr;
   }
 

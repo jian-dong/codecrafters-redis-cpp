@@ -179,8 +179,27 @@ void ClientSession::Run() {
 
       std::string response;
       if (cmd == "MULTI") {
-        in_multi_ = true;
-        response = "+OK\r\n";
+        CommandResult command_result = command_executor_.Execute(args);
+        if (!command_result) {
+          response =
+              RespWriter::Error(CommandErrorMessage(command_result.error()));
+        } else {
+          in_multi_ = true;
+          response = RespWriter::Write(*command_result);
+        }
+      } else if (cmd == "WATCH" && in_multi_) {
+        response = RespWriter::Error(CommandErrorMessage(CommandError{
+            .code = CommandErrorCode::kWatchInsideMulti,
+            .command = "watch"}));
+      } else if (cmd == "WATCH") {
+        CommandResult command_result = command_executor_.Execute(args);
+        if (!command_result) {
+          response =
+              RespWriter::Error(CommandErrorMessage(command_result.error()));
+        } else {
+          watched_keys_.insert(args[1]);
+          response = RespWriter::Write(*command_result);
+        }
       } else if (cmd == "PUBLISH" && args.size() == 3 && pubsub_manager_ != nullptr) {
         response =
             RespWriter::Write(RespInteger{pubsub_manager_->Publish(args[1], args[2])});

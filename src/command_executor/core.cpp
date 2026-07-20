@@ -68,6 +68,8 @@ std::string CommandErrorMessage(const CommandError& error) {
       return "ERR EXEC without MULTI";
     case CommandErrorCode::kDiscardWithoutMulti:
       return "ERR DISCARD without MULTI";
+    case CommandErrorCode::kWatchInsideMulti:
+      return "ERR WATCH inside MULTI is not allowed";
   }
 
   return "ERR command failed";
@@ -93,6 +95,9 @@ CommandResult CommandExecutor::Execute(const std::vector<std::string>& args) {
   }
   if (command == "WATCH") {
     return HandleWatch(args);
+  }
+  if (command == "MULTI") {
+    return HandleMulti(args);
   }
   if (command == "KEYS") {
     return HandleKeys(args);
@@ -273,6 +278,16 @@ CommandResult CommandExecutor::HandleWatch(
   if (args.size() != 2) {
     return tl::make_unexpected(CommandError{
         .code = CommandErrorCode::kWrongArity, .command = "watch"});
+  }
+
+  return RespSimpleString{"OK"};
+}
+
+CommandResult CommandExecutor::HandleMulti(
+    const std::vector<std::string>& args) {
+  if (args.size() != 1) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "multi"});
   }
 
   return RespSimpleString{"OK"};

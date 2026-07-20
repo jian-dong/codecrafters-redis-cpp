@@ -30,6 +30,7 @@ class ClientSession {
   bool authenticated_ = true;
   bool in_multi_ = false;
   std::vector<std::vector<std::string>> queued_commands_;
+  std::unordered_set<std::string> watched_keys_;
   std::unordered_set<std::string> subscribed_channels_;
   std::unordered_set<std::string> subscribed_patterns_;
 };

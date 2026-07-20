@@ -24,6 +24,7 @@ enum class CommandErrorCode {
   kXaddIdNotGreaterThanTopItem,
   kExecWithoutMulti,
   kDiscardWithoutMulti,
+  kWatchInsideMulti,
 };
 
 struct CommandError {
@@ -50,6 +51,7 @@ class CommandExecutor {
   CommandResult HandleSet(const std::vector<std::string>& args);
   CommandResult HandleGet(const std::vector<std::string>& args);
   CommandResult HandleWatch(const std::vector<std::string>& args);
+  CommandResult HandleMulti(const std::vector<std::string>& args);
   CommandResult HandleKeys(const std::vector<std::string>& args);
   CommandResult HandleAuth(const std::vector<std::string>& args);
   CommandResult HandleAcl(const std::vector<std::string>& args);

@@ -49,6 +49,7 @@ class CommandExecutor {
   CommandResult HandleEcho(const std::vector<std::string>& args);
   CommandResult HandleSet(const std::vector<std::string>& args);
   CommandResult HandleGet(const std::vector<std::string>& args);
+  CommandResult HandleWatch(const std::vector<std::string>& args);
   CommandResult HandleKeys(const std::vector<std::string>& args);
   CommandResult HandleAuth(const std::vector<std::string>& args);
   CommandResult HandleAcl(const std::vector<std::string>& args);

@@ -91,6 +91,9 @@ CommandResult CommandExecutor::Execute(const std::vector<std::string>& args) {
   if (command == "GET") {
     return HandleGet(args);
   }
+  if (command == "WATCH") {
+    return HandleWatch(args);
+  }
   if (command == "KEYS") {
     return HandleKeys(args);
   }
@@ -263,6 +266,16 @@ CommandResult CommandExecutor::HandleGet(const std::vector<std::string>& args) {
   }
 
   return RespBulkString{*result.value};
+}
+
+CommandResult CommandExecutor::HandleWatch(
+    const std::vector<std::string>& args) {
+  if (args.size() != 2) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "watch"});
+  }
+
+  return RespSimpleString{"OK"};
 }
 
 CommandResult CommandExecutor::HandleKeys(const std::vector<std::string>& args) {

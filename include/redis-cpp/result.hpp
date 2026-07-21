@@ -40,13 +40,25 @@ struct RespError {
   RespErrorCode code = RespErrorCode::kInvalidFrame;
 };
 
-using ErrorKind = std::variant<CliError, NetworkError, RespError>;
+enum class FileSystemErrorCode {
+  kCreateDirectoryFailed,
+};
+
+struct FileSystemError {
+  FileSystemErrorCode code = FileSystemErrorCode::kCreateDirectoryFailed;
+  std::string path;
+};
+
+using ErrorKind =
+    std::variant<CliError, NetworkError, RespError, FileSystemError>;
 
 class Error {
  public:
   explicit Error(CliError cli_error) : kind_(cli_error) {}
   explicit Error(NetworkError network_error) : kind_(network_error) {}
   explicit Error(RespError resp_error) : kind_(resp_error) {}
+  explicit Error(FileSystemError file_system_error)
+      : kind_(std::move(file_system_error)) {}
 
   [[nodiscard]] const ErrorKind& Kind() const { return kind_; }
 
@@ -89,6 +101,14 @@ class Error {
       }
     }
 
+    if (const auto* file_system_error =
+            std::get_if<FileSystemError>(&kind_)) {
+      switch (file_system_error->code) {
+        case FileSystemErrorCode::kCreateDirectoryFailed:
+          return "Failed to create directory " + file_system_error->path;
+      }
+    }
+
     return "";
   }
 
@@ -113,5 +133,8 @@ inline Error MakeRespError(RespErrorCode code) {
   return Error(RespError{.code = code});
 }
 
-}  // namespace redis
+inline Error MakeFileSystemError(FileSystemErrorCode code, std::string path) {
+  return Error(FileSystemError{.code = code, .path = std::move(path)});
+}
 
+}  // namespace redis

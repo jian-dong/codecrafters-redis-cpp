@@ -2,6 +2,7 @@
 
 #include <iostream>
 
+#include "redis-cpp/aof.hpp"
 #include "redis-cpp/redis_server.hpp"
 
 namespace redis {
@@ -10,6 +11,11 @@ int Application::Run(int argc, char** argv) {
   Result<ServerConfig> config = config_parser_.Parse(argc, argv);
   if (!config) {
     return ExitWithError(config.error());
+  }
+
+  Status aof_status = PrepareAofDirectory(*config);
+  if (!aof_status) {
+    return ExitWithError(aof_status.error());
   }
 
   RedisServer server(*config);

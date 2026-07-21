@@ -69,6 +69,13 @@ RedisServer::RedisServer(ServerConfig config)
 Status RedisServer::Run() {
   LoadDatabaseFromRdb(config_, database_);
 
+  CommandExecutor replay_executor(database_, !config_.replicaof.empty(),
+                                  &replica_manager_, &config_);
+  Status replay_status = ReplayAof(config_, replay_executor);
+  if (!replay_status) {
+    return replay_status;
+  }
+
   if (!config_.replicaof.empty()) {
     Status handshake = ConnectToMaster();
     if (!handshake) {

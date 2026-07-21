@@ -3,12 +3,14 @@
 #include <cerrno>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <system_error>
 
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "redis-cpp/command_executor.hpp"
 #include "redis-cpp/resp.hpp"
 
 namespace redis {
@@ -20,6 +22,41 @@ std::filesystem::path AppendDirectory(const ServerConfig& config) {
 
 std::filesystem::path ManifestPath(const ServerConfig& config) {
   return AppendDirectory(config) / (config.appendfilename + ".manifest");
+}
+
+Result<std::string> FindIncrementalFile(const ServerConfig& config) {
+  const std::filesystem::path manifest_path = ManifestPath(config);
+  std::ifstream manifest(manifest_path);
+  if (!manifest.is_open()) {
+    return tl::make_unexpected(MakeFileSystemError(
+        FileSystemErrorCode::kReadFileFailed, manifest_path.string()));
+  }
+
+  std::string line;
+  while (std::getline(manifest, line)) {
+    std::istringstream fields(line);
+    std::string file_label;
+    std::string file_name;
+    std::string sequence_label;
+    std::string sequence;
+    std::string type_label;
+    std::string type;
+    std::string extra;
+    if (fields >> file_label >> file_name >> sequence_label >> sequence >>
+            type_label >> type &&
+        !(fields >> extra) && file_label == "file" &&
+        sequence_label == "seq" && type_label == "type" && type == "i" &&
+        std::filesystem::path(file_name).filename() == file_name) {
+      return file_name;
+    }
+  }
+
+  if (!manifest.eof()) {
+    return tl::make_unexpected(MakeFileSystemError(
+        FileSystemErrorCode::kReadFileFailed, manifest_path.string()));
+  }
+  return tl::make_unexpected(MakeFileSystemError(
+      FileSystemErrorCode::kInvalidFileFormat, manifest_path.string()));
 }
 
 }  // namespace
@@ -85,48 +122,13 @@ Status PrepareAofStorage(const ServerConfig& config) {
 
 AofWriter::AofWriter(ServerConfig config) : config_(std::move(config)) {}
 
-Result<std::string> AofWriter::FindIncrementalFile() const {
-  const std::filesystem::path manifest_path = ManifestPath(config_);
-  std::ifstream manifest(manifest_path);
-  if (!manifest.is_open()) {
-    return tl::make_unexpected(MakeFileSystemError(
-        FileSystemErrorCode::kReadFileFailed, manifest_path.string()));
-  }
-
-  std::string line;
-  while (std::getline(manifest, line)) {
-    std::istringstream fields(line);
-    std::string file_label;
-    std::string file_name;
-    std::string sequence_label;
-    std::string sequence;
-    std::string type_label;
-    std::string type;
-    std::string extra;
-    if (fields >> file_label >> file_name >> sequence_label >> sequence >>
-            type_label >> type &&
-        !(fields >> extra) && file_label == "file" &&
-        sequence_label == "seq" && type_label == "type" && type == "i" &&
-        std::filesystem::path(file_name).filename() == file_name) {
-      return file_name;
-    }
-  }
-
-  if (!manifest.eof()) {
-    return tl::make_unexpected(MakeFileSystemError(
-        FileSystemErrorCode::kReadFileFailed, manifest_path.string()));
-  }
-  return tl::make_unexpected(MakeFileSystemError(
-      FileSystemErrorCode::kInvalidFileFormat, manifest_path.string()));
-}
-
 Status AofWriter::Append(const std::vector<std::string>& command) {
   if (config_.appendonly != "yes") {
     return {};
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  Result<std::string> incremental_file = FindIncrementalFile();
+  Result<std::string> incremental_file = FindIncrementalFile(config_);
   if (!incremental_file) {
     return tl::make_unexpected(incremental_file.error());
   }
@@ -164,6 +166,54 @@ Status AofWriter::Append(const std::vector<std::string>& command) {
   if (close(descriptor) != 0) {
     return tl::make_unexpected(MakeFileSystemError(
         FileSystemErrorCode::kWriteFileFailed, append_file_path.string()));
+  }
+
+  return {};
+}
+
+Status ReplayAof(const ServerConfig& config, CommandExecutor& executor) {
+  if (config.appendonly != "yes") {
+    return {};
+  }
+
+  Result<std::string> incremental_file = FindIncrementalFile(config);
+  if (!incremental_file) {
+    return tl::make_unexpected(incremental_file.error());
+  }
+
+  const std::filesystem::path append_file_path =
+      AppendDirectory(config) / *incremental_file;
+  std::ifstream append_file(append_file_path, std::ios::binary);
+  if (!append_file.is_open()) {
+    return tl::make_unexpected(MakeFileSystemError(
+        FileSystemErrorCode::kReadFileFailed, append_file_path.string()));
+  }
+
+  const std::string encoded{
+      std::istreambuf_iterator<char>(append_file),
+      std::istreambuf_iterator<char>()};
+  if (append_file.bad()) {
+    return tl::make_unexpected(MakeFileSystemError(
+        FileSystemErrorCode::kReadFileFailed, append_file_path.string()));
+  }
+
+  RespParser parser;
+  parser.Append(encoded);
+  while (parser.BufferSize() > 0) {
+    Result<std::optional<std::vector<std::string>>> command =
+        parser.NextCommand();
+    if (!command || !command->has_value()) {
+      return tl::make_unexpected(MakeFileSystemError(
+          FileSystemErrorCode::kInvalidFileFormat,
+          append_file_path.string()));
+    }
+
+    CommandResult result = executor.Execute(**command);
+    if (!result) {
+      return tl::make_unexpected(MakeFileSystemError(
+          FileSystemErrorCode::kInvalidFileFormat,
+          append_file_path.string()));
+    }
   }
 
   return {};

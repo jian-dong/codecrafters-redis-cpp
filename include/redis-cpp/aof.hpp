@@ -9,17 +9,18 @@
 
 namespace redis {
 
+class CommandExecutor;
+
 Status PrepareAofStorage(const ServerConfig& config);
+Status ReplayAof(const ServerConfig& config, CommandExecutor& executor);
 
 class AofWriter {
  public:
   explicit AofWriter(ServerConfig config);
 
-  Status Append(const std::vector<std::string>& command);
+ Status Append(const std::vector<std::string>& command);
 
  private:
-  Result<std::string> FindIncrementalFile() const;
-
   ServerConfig config_;
   std::mutex mutex_;
 };

@@ -204,6 +204,15 @@ void ClientSession::Run() {
           }
           response = RespWriter::Write(*command_result);
         }
+      } else if (cmd == "UNWATCH") {
+        CommandResult command_result = command_executor_.Execute(args);
+        if (!command_result) {
+          response =
+              RespWriter::Error(CommandErrorMessage(command_result.error()));
+        } else {
+          watched_key_versions_.clear();
+          response = RespWriter::Write(*command_result);
+        }
       } else if (cmd == "PUBLISH" && args.size() == 3 && pubsub_manager_ != nullptr) {
         response =
             RespWriter::Write(RespInteger{pubsub_manager_->Publish(args[1], args[2])});

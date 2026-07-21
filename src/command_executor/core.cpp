@@ -107,6 +107,9 @@ CommandResult CommandExecutor::Execute(const std::vector<std::string>& args) {
   if (command == "WATCH") {
     return HandleWatch(args);
   }
+  if (command == "UNWATCH") {
+    return HandleUnwatch(args);
+  }
   if (command == "MULTI") {
     return HandleMulti(args);
   }
@@ -318,6 +321,16 @@ CommandResult CommandExecutor::HandleWatch(
   if (args.size() < 2) {
     return tl::make_unexpected(CommandError{
         .code = CommandErrorCode::kWrongArity, .command = "watch"});
+  }
+
+  return RespSimpleString{"OK"};
+}
+
+CommandResult CommandExecutor::HandleUnwatch(
+    const std::vector<std::string>& args) {
+  if (args.size() != 1) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "unwatch"});
   }
 
   return RespSimpleString{"OK"};

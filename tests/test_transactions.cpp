@@ -59,6 +59,19 @@ TEST(TransactionTest, WatchRequiresAtLeastOneKey) {
   EXPECT_EQ(RespWriter::Write(*multiple_keys), "+OK\r\n");
 }
 
+TEST(TransactionTest, UnwatchReturnsOkAndRejectsArguments) {
+  Database database;
+  CommandExecutor executor(database);
+
+  redis::CommandResult result = executor.Execute({"UNWATCH"});
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(RespWriter::Write(*result), "+OK\r\n");
+
+  result = executor.Execute({"UNWATCH", "unexpected"});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code, CommandErrorCode::kWrongArity);
+}
+
 TEST(TransactionTest, MultiReturnsOk) {
   Database database;
   CommandExecutor executor(database);
@@ -161,7 +174,7 @@ TEST(TransactionTest, ExecAbortsWhenAnyWatchedKeyWasTouched) {
   second_thread.join();
 }
 
-TEST(TransactionTest, ExecRunsWhenOnlyUnwatchedKeysWereTouched) {
+TEST(TransactionTest, UnwatchAllowsTransactionAfterWatchedKeyWasTouched) {
   Database database;
   CommandExecutor executor(database);
   int first_fds[2];
@@ -180,13 +193,14 @@ TEST(TransactionTest, ExecRunsWhenOnlyUnwatchedKeysWereTouched) {
             "+OK\r\n");
   EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "caz", "200"}),
             "+OK\r\n");
-  EXPECT_EQ(ExchangeCommand(first_fds[1], {"WATCH", "baz"}), "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"WATCH", "baz", "caz"}),
+            "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(second_fds[1], {"SET", "baz", "300"}),
+            "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"UNWATCH"}), "+OK\r\n");
   EXPECT_EQ(ExchangeCommand(first_fds[1], {"MULTI"}), "+OK\r\n");
   EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "caz", "400"}),
             "+QUEUED\r\n");
-
-  EXPECT_EQ(ExchangeCommand(second_fds[1], {"SET", "caz", "300"}),
-            "+OK\r\n");
 
   EXPECT_EQ(ExchangeCommand(first_fds[1], {"EXEC"}), "*1\r\n+OK\r\n");
   EXPECT_EQ(ExchangeCommand(second_fds[1], {"GET", "caz"}),

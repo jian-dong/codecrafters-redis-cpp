@@ -1,10 +1,12 @@
 #include "test_support.hpp"
 
+#include <iterator>
+
 #include "redis-cpp/aof.hpp"
 
 namespace {
 
-TEST(AofTest, CreatesConfiguredDirectoryAndFileWhenAppendOnlyIsEnabled) {
+TEST(AofTest, CreatesConfiguredDirectoryAofFileAndManifestWhenEnabled) {
   char parent_template[] = "/tmp/redis-aof-testXXXXXX";
   char* parent = mkdtemp(parent_template);
   ASSERT_NE(parent, nullptr);
@@ -18,6 +20,8 @@ TEST(AofTest, CreatesConfiguredDirectoryAndFileWhenAppendOnlyIsEnabled) {
       std::filesystem::path(config.dir) / config.appenddirname;
   const std::filesystem::path expected_file =
       expected_directory / "custom.aof.1.incr.aof";
+  const std::filesystem::path expected_manifest =
+      expected_directory / "custom.aof.manifest";
 
   const redis::Status result = redis::PrepareAofStorage(config);
 
@@ -25,6 +29,11 @@ TEST(AofTest, CreatesConfiguredDirectoryAndFileWhenAppendOnlyIsEnabled) {
   EXPECT_TRUE(std::filesystem::is_directory(expected_directory));
   EXPECT_TRUE(std::filesystem::is_regular_file(expected_file));
   EXPECT_EQ(std::filesystem::file_size(expected_file), 0U);
+  EXPECT_TRUE(std::filesystem::is_regular_file(expected_manifest));
+  std::ifstream manifest(expected_manifest);
+  EXPECT_EQ(std::string(std::istreambuf_iterator<char>(manifest),
+                        std::istreambuf_iterator<char>()),
+            "file custom.aof.1.incr.aof seq 1 type i\n");
   std::filesystem::remove_all(parent);
 }
 
@@ -116,6 +125,32 @@ TEST(AofTest, FileCreationFailureReturnsActionableError) {
   ASSERT_NE(error, nullptr);
   EXPECT_EQ(error->code, redis::FileSystemErrorCode::kCreateFileFailed);
   EXPECT_EQ(error->path, expected_file.string());
+  std::filesystem::remove_all(parent);
+}
+
+TEST(AofTest, ManifestCreationFailureReturnsActionableError) {
+  char parent_template[] = "/tmp/redis-aof-manifest-error-testXXXXXX";
+  char* parent = mkdtemp(parent_template);
+  ASSERT_NE(parent, nullptr);
+
+  redis::ServerConfig config;
+  config.dir = parent;
+  config.appendonly = "yes";
+  config.appenddirname = "appendonlydir";
+  config.appendfilename = "appendonly.aof";
+  const std::filesystem::path manifest_path =
+      std::filesystem::path(config.dir) / config.appenddirname /
+      "appendonly.aof.manifest";
+  ASSERT_TRUE(std::filesystem::create_directories(manifest_path));
+
+  const redis::Status result = redis::PrepareAofStorage(config);
+
+  ASSERT_FALSE(result.has_value());
+  const auto* error =
+      std::get_if<redis::FileSystemError>(&result.error().Kind());
+  ASSERT_NE(error, nullptr);
+  EXPECT_EQ(error->code, redis::FileSystemErrorCode::kCreateFileFailed);
+  EXPECT_EQ(error->path, manifest_path.string());
   std::filesystem::remove_all(parent);
 }
 

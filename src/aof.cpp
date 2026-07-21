@@ -30,6 +30,22 @@ Status PrepareAofStorage(const ServerConfig& config) {
         FileSystemErrorCode::kCreateFileFailed, append_file_path.string()));
   }
 
+  const std::filesystem::path manifest_path =
+      append_directory / (config.appendfilename + ".manifest");
+  std::ofstream manifest_file(manifest_path, std::ios::binary);
+  if (!manifest_file.is_open()) {
+    return tl::make_unexpected(MakeFileSystemError(
+        FileSystemErrorCode::kCreateFileFailed, manifest_path.string()));
+  }
+
+  manifest_file << "file " << append_file_path.filename().string()
+                << " seq 1 type i\n";
+  manifest_file.flush();
+  if (!manifest_file) {
+    return tl::make_unexpected(MakeFileSystemError(
+        FileSystemErrorCode::kWriteFileFailed, manifest_path.string()));
+  }
+
   return {};
 }
 

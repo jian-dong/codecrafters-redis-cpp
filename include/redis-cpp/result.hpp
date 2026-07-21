@@ -43,7 +43,10 @@ struct RespError {
 enum class FileSystemErrorCode {
   kCreateDirectoryFailed,
   kCreateFileFailed,
+  kReadFileFailed,
   kWriteFileFailed,
+  kSyncFileFailed,
+  kInvalidFileFormat,
 };
 
 struct FileSystemError {
@@ -110,8 +113,14 @@ class Error {
           return "Failed to create directory " + file_system_error->path;
         case FileSystemErrorCode::kCreateFileFailed:
           return "Failed to create file " + file_system_error->path;
+        case FileSystemErrorCode::kReadFileFailed:
+          return "Failed to read file " + file_system_error->path;
         case FileSystemErrorCode::kWriteFileFailed:
           return "Failed to write file " + file_system_error->path;
+        case FileSystemErrorCode::kSyncFileFailed:
+          return "Failed to sync file " + file_system_error->path;
+        case FileSystemErrorCode::kInvalidFileFormat:
+          return "Invalid file format in " + file_system_error->path;
       }
     }
 

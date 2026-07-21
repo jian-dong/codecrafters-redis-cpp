@@ -41,11 +41,13 @@ const std::string& GetEmptyRdb() {
 
 CommandExecutor::CommandExecutor(Database& database, bool is_replica,
                                  ReplicaManager* replica_manager,
-                                 const ServerConfig* server_config)
+                                 const ServerConfig* server_config,
+                                 AofWriter* aof_writer)
     : database_(database),
       is_replica_(is_replica),
       replica_manager_(replica_manager),
-      server_config_(server_config) {}
+      server_config_(server_config),
+      aof_writer_(aof_writer) {}
 
 std::string CommandErrorMessage(const CommandError& error) {
   switch (error.code) {
@@ -76,6 +78,8 @@ std::string CommandErrorMessage(const CommandError& error) {
       return "ERR DISCARD without MULTI";
     case CommandErrorCode::kWatchInsideMulti:
       return "ERR WATCH inside MULTI is not allowed";
+    case CommandErrorCode::kPersistenceFailed:
+      return "MISCONF " + error.detail;
   }
 
   return "ERR command failed";
@@ -295,6 +299,15 @@ CommandResult CommandExecutor::HandleSet(const std::vector<std::string>& args) {
   }
 
   database_.SetString(args[1], args[2], ttl);
+  if (aof_writer_ != nullptr) {
+    Status append_status = aof_writer_->Append(args);
+    if (!append_status) {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kPersistenceFailed,
+          .command = "set",
+          .detail = append_status.error().Message()});
+    }
+  }
   return RespSimpleString{"OK"};
 }
 

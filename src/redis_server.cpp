@@ -62,8 +62,9 @@ class MasterReader {
 
 RedisServer::RedisServer(ServerConfig config)
     : config_(config),
+      aof_writer_(config_),
       command_executor_(database_, !config_.replicaof.empty(), &replica_manager_,
-                        &config_) {}
+                        &config_, &aof_writer_) {}
 
 Status RedisServer::Run() {
   LoadDatabaseFromRdb(config_, database_);

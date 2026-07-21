@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "redis-cpp/aof.hpp"
 #include "redis-cpp/database.hpp"
 #include "redis-cpp/replica_manager.hpp"
 #include "redis-cpp/resp.hpp"
@@ -26,11 +27,13 @@ enum class CommandErrorCode {
   kExecWithoutMulti,
   kDiscardWithoutMulti,
   kWatchInsideMulti,
+  kPersistenceFailed,
 };
 
 struct CommandError {
   CommandErrorCode code = CommandErrorCode::kUnknownCommand;
   std::string command;
+  std::string detail;
 };
 
 using CommandResult = tl::expected<RespValue, CommandError>;
@@ -46,7 +49,8 @@ class CommandExecutor {
  public:
   explicit CommandExecutor(Database& database, bool is_replica = false,
                            ReplicaManager* replica_manager = nullptr,
-                           const ServerConfig* server_config = nullptr);
+                           const ServerConfig* server_config = nullptr,
+                           AofWriter* aof_writer = nullptr);
 
   CommandResult Execute(const std::vector<std::string>& args);
   std::unordered_map<std::string, uint64_t> GetKeyVersions(
@@ -107,6 +111,7 @@ class CommandExecutor {
   bool is_replica_ = false;
   ReplicaManager* replica_manager_ = nullptr;
   const ServerConfig* server_config_ = nullptr;
+  AofWriter* aof_writer_ = nullptr;
   mutable std::mutex acl_mutex_;
   std::recursive_mutex transaction_mutex_;
   AclUserState default_user_;

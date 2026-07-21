@@ -1,5 +1,6 @@
 #pragma once
 
+#include "redis-cpp/aof.hpp"
 #include "redis-cpp/command_executor.hpp"
 #include "redis-cpp/database.hpp"
 #include "redis-cpp/pubsub_manager.hpp"
@@ -22,6 +23,7 @@ class RedisServer {
   void ProcessReplicatedCommands();
 
   ServerConfig config_;
+  AofWriter aof_writer_;
   Database database_;
   PubSubManager pubsub_manager_;
   ReplicaManager replica_manager_;

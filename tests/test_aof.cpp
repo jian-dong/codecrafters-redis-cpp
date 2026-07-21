@@ -154,4 +154,80 @@ TEST(AofTest, ManifestCreationFailureReturnsActionableError) {
   std::filesystem::remove_all(parent);
 }
 
+TEST(AofTest, SetAppendsRespToIncrementalFileNamedByExistingManifest) {
+  char parent_template[] = "/tmp/redis-aof-append-testXXXXXX";
+  char* parent = mkdtemp(parent_template);
+  ASSERT_NE(parent, nullptr);
+
+  redis::ServerConfig config;
+  config.dir = parent;
+  config.appendonly = "yes";
+  config.appenddirname = "appendonlydir";
+  config.appendfilename = "configured.aof";
+  config.appendfsync = "always";
+  const std::filesystem::path append_directory =
+      std::filesystem::path(config.dir) / config.appenddirname;
+  ASSERT_TRUE(std::filesystem::create_directories(append_directory));
+
+  const std::filesystem::path manifest_path =
+      append_directory / "configured.aof.manifest";
+  const std::string manifest_contents =
+      "file active-random.1.incr.aof seq 1 type i\n";
+  std::ofstream(manifest_path) << manifest_contents;
+  const std::filesystem::path active_file =
+      append_directory / "active-random.1.incr.aof";
+  std::ofstream initial_aof(active_file);
+  ASSERT_TRUE(initial_aof.is_open());
+  initial_aof.close();
+
+  ASSERT_TRUE(redis::PrepareAofStorage(config).has_value());
+  redis::AofWriter writer(config);
+  redis::Database database;
+  redis::CommandExecutor executor(database, false, nullptr, &config, &writer);
+
+  const redis::CommandResult result = executor.Execute({"SET", "foo", "100"});
+
+  ASSERT_TRUE(result.has_value());
+  std::ifstream aof(active_file, std::ios::binary);
+  EXPECT_EQ(std::string(std::istreambuf_iterator<char>(aof),
+                        std::istreambuf_iterator<char>()),
+            "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\n100\r\n");
+  std::ifstream manifest(manifest_path);
+  EXPECT_EQ(std::string(std::istreambuf_iterator<char>(manifest),
+                        std::istreambuf_iterator<char>()),
+            manifest_contents);
+  EXPECT_FALSE(std::filesystem::exists(
+      append_directory / "configured.aof.1.incr.aof"));
+  std::filesystem::remove_all(parent);
+}
+
+TEST(AofTest, InvalidManifestMakesSetReturnPersistenceError) {
+  char parent_template[] = "/tmp/redis-aof-invalid-manifest-testXXXXXX";
+  char* parent = mkdtemp(parent_template);
+  ASSERT_NE(parent, nullptr);
+
+  redis::ServerConfig config;
+  config.dir = parent;
+  config.appendonly = "yes";
+  config.appenddirname = "appendonlydir";
+  const std::filesystem::path append_directory =
+      std::filesystem::path(config.dir) / config.appenddirname;
+  ASSERT_TRUE(std::filesystem::create_directories(append_directory));
+  std::ofstream(append_directory / "appendonly.aof.manifest")
+      << "not a valid manifest\n";
+
+  redis::AofWriter writer(config);
+  redis::Database database;
+  redis::CommandExecutor executor(database, false, nullptr, &config, &writer);
+
+  const redis::CommandResult result = executor.Execute({"SET", "foo", "100"});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code,
+            redis::CommandErrorCode::kPersistenceFailed);
+  EXPECT_NE(result.error().detail.find("Invalid file format"),
+            std::string::npos);
+  std::filesystem::remove_all(parent);
+}
+
 }  // namespace

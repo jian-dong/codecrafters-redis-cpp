@@ -25,6 +25,36 @@ TEST(ConfigTest, StartupDefaultsIncludeCurrentDirectoryAndAofOptions) {
   EXPECT_EQ(result->appendfsync, "everysec");
 }
 
+TEST(ConfigTest, CommandLineFlagsOverrideAofDefaults) {
+  char program_name[] = "redis";
+  char dir_flag[] = "--dir";
+  char dir_value[] = "/tmp/redis-aof";
+  char appendonly_flag[] = "--appendonly";
+  char appendonly_value[] = "yes";
+  char appenddirname_flag[] = "--appenddirname";
+  char appenddirname_value[] = "custom-aof-dir";
+  char appendfilename_flag[] = "--appendfilename";
+  char appendfilename_value[] = "custom.aof";
+  char appendfsync_flag[] = "--appendfsync";
+  char appendfsync_value[] = "always";
+  char* argv[] = {
+      program_name,         dir_flag,            dir_value,
+      appendonly_flag,      appendonly_value,    appenddirname_flag,
+      appenddirname_value,  appendfilename_flag, appendfilename_value,
+      appendfsync_flag,     appendfsync_value,
+  };
+
+  const redis::Result<ServerConfig> result =
+      redis::ConfigParser{}.Parse(11, argv);
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->dir, "/tmp/redis-aof");
+  EXPECT_EQ(result->appendonly, "yes");
+  EXPECT_EQ(result->appenddirname, "custom-aof-dir");
+  EXPECT_EQ(result->appendfilename, "custom.aof");
+  EXPECT_EQ(result->appendfsync, "always");
+}
+
 TEST(ConfigTest, ConfigGetReturnsAofDefaults) {
   Database database;
   ServerConfig config;

@@ -27,6 +27,14 @@ Result<ServerConfig> ConfigParser::Parse(int argc, char** argv) const {
   app.add_option("--dir", config.dir, "directory where the RDB file is stored");
   app.add_option("--dbfilename", config.dbfilename,
                  "name of the RDB file");
+  app.add_option("--appendonly", config.appendonly,
+                 "whether append-only persistence is enabled");
+  app.add_option("--appenddirname", config.appenddirname,
+                 "directory where append-only files are stored");
+  app.add_option("--appendfilename", config.appendfilename,
+                 "name of the append-only file");
+  app.add_option("--appendfsync", config.appendfsync,
+                 "append-only file synchronization policy");
 
   try {
     app.parse(argc, argv);

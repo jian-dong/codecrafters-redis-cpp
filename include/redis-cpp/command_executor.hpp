@@ -49,7 +49,8 @@ class CommandExecutor {
                            const ServerConfig* server_config = nullptr);
 
   CommandResult Execute(const std::vector<std::string>& args);
-  uint64_t GetKeyVersion(const std::string& key);
+  std::unordered_map<std::string, uint64_t> GetKeyVersions(
+      const std::vector<std::string>& keys);
   TransactionExecution ExecuteTransaction(
       const std::vector<std::vector<std::string>>& commands,
       const std::unordered_map<std::string, uint64_t>& watched_key_versions);

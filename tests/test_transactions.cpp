@@ -45,7 +45,7 @@ TEST(TransactionTest, WatchCommandIsCaseInsensitive) {
   EXPECT_EQ(RespWriter::Write(*result), "+OK\r\n");
 }
 
-TEST(TransactionTest, WatchRequiresExactlyOneKey) {
+TEST(TransactionTest, WatchRequiresAtLeastOneKey) {
   Database database;
   CommandExecutor executor(database);
 
@@ -55,8 +55,8 @@ TEST(TransactionTest, WatchRequiresExactlyOneKey) {
 
   redis::CommandResult multiple_keys =
       executor.Execute({"WATCH", "key1", "key2"});
-  ASSERT_FALSE(multiple_keys.has_value());
-  EXPECT_EQ(multiple_keys.error().code, CommandErrorCode::kWrongArity);
+  ASSERT_TRUE(multiple_keys.has_value());
+  EXPECT_EQ(RespWriter::Write(*multiple_keys), "+OK\r\n");
 }
 
 TEST(TransactionTest, MultiReturnsOk) {
@@ -121,7 +121,7 @@ TEST(TransactionTest, WatchInsideMultiReturnsError) {
   session_thread.join();
 }
 
-TEST(TransactionTest, ExecAbortsWhenWatchedKeyWasTouched) {
+TEST(TransactionTest, ExecAbortsWhenAnyWatchedKeyWasTouched) {
   Database database;
   CommandExecutor executor(database);
   int first_fds[2];
@@ -140,7 +140,8 @@ TEST(TransactionTest, ExecAbortsWhenWatchedKeyWasTouched) {
             "+OK\r\n");
   EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "bar", "200"}),
             "+OK\r\n");
-  EXPECT_EQ(ExchangeCommand(first_fds[1], {"WATCH", "foo"}), "+OK\r\n");
+  EXPECT_EQ(ExchangeCommand(first_fds[1], {"WATCH", "foo", "bar"}),
+            "+OK\r\n");
   EXPECT_EQ(ExchangeCommand(first_fds[1], {"MULTI"}), "+OK\r\n");
   EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "bar", "300"}),
             "+QUEUED\r\n");

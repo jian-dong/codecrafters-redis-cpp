@@ -220,9 +220,15 @@ CommandResult CommandExecutor::Execute(const std::vector<std::string>& args) {
       .code = CommandErrorCode::kUnknownCommand, .command = args[0]});
 }
 
-uint64_t CommandExecutor::GetKeyVersion(const std::string& key) {
+std::unordered_map<std::string, uint64_t> CommandExecutor::GetKeyVersions(
+    const std::vector<std::string>& keys) {
   std::lock_guard<std::recursive_mutex> lock(transaction_mutex_);
-  return database_.KeyVersion(key);
+  std::unordered_map<std::string, uint64_t> versions;
+  versions.reserve(keys.size());
+  for (const std::string& key : keys) {
+    versions.try_emplace(key, database_.KeyVersion(key));
+  }
+  return versions;
 }
 
 TransactionExecution CommandExecutor::ExecuteTransaction(
@@ -309,7 +315,7 @@ CommandResult CommandExecutor::HandleGet(const std::vector<std::string>& args) {
 
 CommandResult CommandExecutor::HandleWatch(
     const std::vector<std::string>& args) {
-  if (args.size() != 2) {
+  if (args.size() < 2) {
     return tl::make_unexpected(CommandError{
         .code = CommandErrorCode::kWrongArity, .command = "watch"});
   }

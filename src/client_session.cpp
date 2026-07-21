@@ -197,8 +197,11 @@ void ClientSession::Run() {
           response =
               RespWriter::Error(CommandErrorMessage(command_result.error()));
         } else {
-          watched_key_versions_.try_emplace(
-              args[1], command_executor_.GetKeyVersion(args[1]));
+          const std::vector<std::string> keys(args.begin() + 1, args.end());
+          const auto versions = command_executor_.GetKeyVersions(keys);
+          for (const auto& [key, version] : versions) {
+            watched_key_versions_.try_emplace(key, version);
+          }
           response = RespWriter::Write(*command_result);
         }
       } else if (cmd == "PUBLISH" && args.size() == 3 && pubsub_manager_ != nullptr) {

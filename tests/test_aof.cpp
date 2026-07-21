@@ -154,7 +154,7 @@ TEST(AofTest, ManifestCreationFailureReturnsActionableError) {
   std::filesystem::remove_all(parent);
 }
 
-TEST(AofTest, SetAppendsRespToIncrementalFileNamedByExistingManifest) {
+TEST(AofTest, SetsAppendInOrderToFileNamedByExistingManifest) {
   char parent_template[] = "/tmp/redis-aof-append-testXXXXXX";
   char* parent = mkdtemp(parent_template);
   ASSERT_NE(parent, nullptr);
@@ -185,13 +185,18 @@ TEST(AofTest, SetAppendsRespToIncrementalFileNamedByExistingManifest) {
   redis::Database database;
   redis::CommandExecutor executor(database, false, nullptr, &config, &writer);
 
-  const redis::CommandResult result = executor.Execute({"SET", "foo", "100"});
+  const redis::CommandResult first_result =
+      executor.Execute({"SET", "foo", "100"});
+  const redis::CommandResult second_result =
+      executor.Execute({"SET", "bar", "200"});
 
-  ASSERT_TRUE(result.has_value());
+  ASSERT_TRUE(first_result.has_value());
+  ASSERT_TRUE(second_result.has_value());
   std::ifstream aof(active_file, std::ios::binary);
   EXPECT_EQ(std::string(std::istreambuf_iterator<char>(aof),
                         std::istreambuf_iterator<char>()),
-            "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\n100\r\n");
+            "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\n100\r\n"
+            "*3\r\n$3\r\nSET\r\n$3\r\nbar\r\n$3\r\n200\r\n");
   std::ifstream manifest(manifest_path);
   EXPECT_EQ(std::string(std::istreambuf_iterator<char>(manifest),
                         std::istreambuf_iterator<char>()),

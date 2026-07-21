@@ -5,6 +5,6 @@
 
 namespace redis {
 
-Status PrepareAofDirectory(const ServerConfig& config);
+Status PrepareAofStorage(const ServerConfig& config);
 
 }  // namespace redis

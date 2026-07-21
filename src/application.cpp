@@ -13,7 +13,7 @@ int Application::Run(int argc, char** argv) {
     return ExitWithError(config.error());
   }
 
-  Status aof_status = PrepareAofDirectory(*config);
+  Status aof_status = PrepareAofStorage(*config);
   if (!aof_status) {
     return ExitWithError(aof_status.error());
   }

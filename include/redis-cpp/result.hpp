@@ -42,6 +42,7 @@ struct RespError {
 
 enum class FileSystemErrorCode {
   kCreateDirectoryFailed,
+  kCreateFileFailed,
 };
 
 struct FileSystemError {
@@ -106,6 +107,8 @@ class Error {
       switch (file_system_error->code) {
         case FileSystemErrorCode::kCreateDirectoryFailed:
           return "Failed to create directory " + file_system_error->path;
+        case FileSystemErrorCode::kCreateFileFailed:
+          return "Failed to create file " + file_system_error->path;
       }
     }
 

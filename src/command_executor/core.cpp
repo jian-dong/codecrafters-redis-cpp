@@ -434,6 +434,18 @@ CommandResult CommandExecutor::HandleConfig(
   if (parameter == "DBFILENAME") {
     return RespArray{{"dbfilename", server_config_->dbfilename}};
   }
+  if (parameter == "APPENDONLY") {
+    return RespArray{{"appendonly", server_config_->appendonly}};
+  }
+  if (parameter == "APPENDDIRNAME") {
+    return RespArray{{"appenddirname", server_config_->appenddirname}};
+  }
+  if (parameter == "APPENDFILENAME") {
+    return RespArray{{"appendfilename", server_config_->appendfilename}};
+  }
+  if (parameter == "APPENDFSYNC") {
+    return RespArray{{"appendfsync", server_config_->appendfsync}};
+  }
 
   return RespArray{{}};
 }

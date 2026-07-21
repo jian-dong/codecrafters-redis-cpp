@@ -1,11 +1,21 @@
 #include "redis-cpp/config_parser.hpp"
 
+#include <filesystem>
+#include <system_error>
+
 #include "redis-cpp/CLI11.hpp"
 
 namespace redis {
 
 Result<ServerConfig> ConfigParser::Parse(int argc, char** argv) const {
   ServerConfig config;
+  std::error_code current_path_error;
+  config.dir = std::filesystem::current_path(current_path_error).string();
+  if (current_path_error) {
+    return tl::make_unexpected(
+        MakeCliError(CliErrorCode::kParseFailed, 1));
+  }
+
   CLI::App app{"Redis server"};
   app.add_option("-p,--port", config.port, "TCP port to listen on")
       ->capture_default_str()

@@ -1,5 +1,7 @@
 #include "test_support.hpp"
 
+#include "redis-cpp/config_parser.hpp"
+
 namespace {
 
 using redis::CommandExecutor;
@@ -7,6 +9,49 @@ using redis::Database;
 using redis::RespArray;
 using redis::ServerConfig;
 using redis::RespWriter;
+
+TEST(ConfigTest, StartupDefaultsIncludeCurrentDirectoryAndAofOptions) {
+  char program_name[] = "redis";
+  char* argv[] = {program_name};
+
+  const redis::Result<ServerConfig> result =
+      redis::ConfigParser{}.Parse(1, argv);
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->dir, std::filesystem::current_path().string());
+  EXPECT_EQ(result->appendonly, "no");
+  EXPECT_EQ(result->appenddirname, "appendonlydir");
+  EXPECT_EQ(result->appendfilename, "appendonly.aof");
+  EXPECT_EQ(result->appendfsync, "everysec");
+}
+
+TEST(ConfigTest, ConfigGetReturnsAofDefaults) {
+  Database database;
+  ServerConfig config;
+  CommandExecutor executor(database, false, nullptr, &config);
+
+  const std::vector<std::pair<std::string, std::string>> defaults = {
+      {"appendonly", "no"},
+      {"appenddirname", "appendonlydir"},
+      {"appendfilename", "appendonly.aof"},
+      {"appendfsync", "everysec"},
+  };
+
+  for (const auto& [option, value] : defaults) {
+    redis::CommandResult result =
+        executor.Execute({"CONFIG", "GET", option});
+    ASSERT_TRUE(result.has_value()) << option;
+    ASSERT_TRUE(std::holds_alternative<RespArray>(*result)) << option;
+    EXPECT_EQ(std::get<RespArray>(*result).values,
+              (std::vector<std::string>{option, value}))
+        << option;
+    EXPECT_EQ(RespWriter::Write(*result),
+              "*2\r\n$" + std::to_string(option.size()) + "\r\n" + option +
+                  "\r\n$" + std::to_string(value.size()) + "\r\n" + value +
+                  "\r\n")
+        << option;
+  }
+}
 
 TEST(ConfigTest, ConfigGetDirReturnsConfiguredDirectory) {
   Database database;

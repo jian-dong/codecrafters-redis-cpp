@@ -1,37 +1,55 @@
 #include "redis-cpp/database.hpp"
 
 #include <algorithm>
-#include <iostream>
 #include <limits>
 
-#include "redis-cpp/resp.hpp"
+#include "redis-cpp/numeric_parser.hpp"
 
 namespace redis {
+namespace {
+
+std::chrono::steady_clock::time_point ExpirationDeadline(
+    std::chrono::milliseconds ttl) {
+  using Clock = std::chrono::steady_clock;
+
+  const Clock::time_point now = Clock::now();
+  if (ttl <= std::chrono::milliseconds::zero()) {
+    return now;
+  }
+
+  const std::chrono::milliseconds remaining =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          Clock::time_point::max() - now);
+  if (ttl > remaining) {
+    return Clock::time_point::max();
+  }
+  return now + ttl;
+}
+
+}  // namespace
 
 std::string ValueTypeName(ValueType type) {
   switch (type) {
-    case ValueType::kString:
-      return "string";
-    case ValueType::kList:
-      return "list";
-    case ValueType::kStream:
-      return "stream";
-    case ValueType::kSortedSet:
-      return "zset";
-    case ValueType::kNone:
-    default:
-      return "none";
+  case ValueType::kString:
+    return "string";
+  case ValueType::kList:
+    return "list";
+  case ValueType::kStream:
+    return "stream";
+  case ValueType::kSortedSet:
+    return "zset";
   }
+  return "none";
 }
 
-void Database::SetString(const std::string& key, std::string value,
+void Database::SetString(const std::string &key, std::string value,
                          std::optional<std::chrono::milliseconds> ttl) {
   Entry entry{
       .value = StringValue{.value = std::move(value)},
       .expires_at = std::nullopt,
   };
   if (ttl.has_value()) {
-    entry.expires_at = std::chrono::steady_clock::now() + *ttl;
+    entry.expires_at = ExpirationDeadline(*ttl);
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
@@ -39,21 +57,22 @@ void Database::SetString(const std::string& key, std::string value,
   ++key_versions_[key];
 }
 
-Database::StringLookup Database::GetString(const std::string& key) {
+DatabaseResult<std::optional<std::string>>
+Database::GetString(const std::string &key) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return std::optional<std::string>{};
   }
 
   if (!std::holds_alternative<StringValue>(entry->value)) {
-    return {.type = EntryValueType(*entry), .value = std::nullopt};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  return {
-      .type = ValueType::kString,
-      .value = std::get<StringValue>(entry->value).value,
-  };
+  return std::optional<std::string>{std::get<StringValue>(entry->value).value};
 }
 
 std::vector<std::string> Database::Keys() {
@@ -78,22 +97,23 @@ std::vector<std::string> Database::Keys() {
   return keys;
 }
 
-ValueType Database::TypeOf(const std::string& key) {
+std::optional<ValueType> Database::TypeOf(const std::string &key) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return ValueType::kNone;
+    return std::nullopt;
   }
 
   return EntryValueType(*entry);
 }
 
-Database::ListMutationResult Database::PushRight(
-    const std::string& key, const std::vector<std::string>& values) {
+DatabaseResult<int64_t>
+Database::PushRight(const std::string &key,
+                    const std::vector<std::string> &values) {
   int64_t size = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    Entry* entry = FindLiveEntryLocked(key);
+    Entry *entry = FindLiveEntryLocked(key);
     if (entry == nullptr) {
       auto [it, _] = store_.emplace(key, Entry{
                                              .value = ListValue{},
@@ -103,26 +123,30 @@ Database::ListMutationResult Database::PushRight(
     }
 
     if (!std::holds_alternative<ListValue>(entry->value)) {
-      return {.wrong_type = true};
+      return tl::make_unexpected(DatabaseError{
+          .code = DatabaseErrorCode::kWrongType,
+          .actual_type = EntryValueType(*entry),
+      });
     }
 
     entry->expires_at.reset();
-    std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
+    std::vector<std::string> &list = std::get<ListValue>(entry->value).values;
     list.insert(list.end(), values.begin(), values.end());
     size = static_cast<int64_t>(list.size());
     ++key_versions_[key];
   }
 
   list_change_cv_.notify_all();
-  return {.size = size};
+  return size;
 }
 
-Database::ListMutationResult Database::PushLeft(
-    const std::string& key, const std::vector<std::string>& values) {
+DatabaseResult<int64_t>
+Database::PushLeft(const std::string &key,
+                   const std::vector<std::string> &values) {
   int64_t size = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    Entry* entry = FindLiveEntryLocked(key);
+    Entry *entry = FindLiveEntryLocked(key);
     if (entry == nullptr) {
       auto [it, _] = store_.emplace(key, Entry{
                                              .value = ListValue{},
@@ -132,12 +156,15 @@ Database::ListMutationResult Database::PushLeft(
     }
 
     if (!std::holds_alternative<ListValue>(entry->value)) {
-      return {.wrong_type = true};
+      return tl::make_unexpected(DatabaseError{
+          .code = DatabaseErrorCode::kWrongType,
+          .actual_type = EntryValueType(*entry),
+      });
     }
 
     entry->expires_at.reset();
-    std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
-    for (const std::string& value : values) {
+    std::vector<std::string> &list = std::get<ListValue>(entry->value).values;
+    for (const std::string &value : values) {
       list.insert(list.begin(), value);
     }
     size = static_cast<int64_t>(list.size());
@@ -145,22 +172,25 @@ Database::ListMutationResult Database::PushLeft(
   }
 
   list_change_cv_.notify_all();
-  return {.size = size};
+  return size;
 }
 
-Database::ListRangeResult Database::Range(const std::string& key, int64_t start,
-                                          int64_t stop) {
+DatabaseResult<std::vector<std::string>>
+Database::Range(const std::string &key, int64_t start, int64_t stop) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return std::vector<std::string>{};
   }
 
   if (!std::holds_alternative<ListValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  const std::vector<std::string>& list =
+  const std::vector<std::string> &list =
       std::get<ListValue>(entry->value).values;
   const int64_t list_size = static_cast<int64_t>(list.size());
 
@@ -185,64 +215,68 @@ Database::ListRangeResult Database::Range(const std::string& key, int64_t start,
     }
   }
 
-  return {.values = std::move(values)};
+  return values;
 }
 
-Database::ListLengthResult Database::Length(const std::string& key) {
+DatabaseResult<int64_t> Database::Length(const std::string &key) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return int64_t{0};
   }
 
   if (!std::holds_alternative<ListValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  return {
-      .length =
-          static_cast<int64_t>(std::get<ListValue>(entry->value).values.size()),
-  };
+  return static_cast<int64_t>(std::get<ListValue>(entry->value).values.size());
 }
 
-Database::ListPopResult Database::PopLeft(const std::string& key) {
+DatabaseResult<std::optional<std::string>>
+Database::PopLeft(const std::string &key) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return std::optional<std::string>{};
   }
 
   if (!std::holds_alternative<ListValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
+  std::vector<std::string> &list = std::get<ListValue>(entry->value).values;
   if (list.empty()) {
-    return {};
+    return std::optional<std::string>{};
   }
 
   std::string value = list.front();
   list.erase(list.begin());
   ++key_versions_[key];
-  return {
-      .found = true,
-      .value = std::move(value),
-  };
+  return std::optional<std::string>{std::move(value)};
 }
 
-Database::ListPopManyResult Database::PopLeft(const std::string& key,
-                                              size_t count) {
+DatabaseResult<std::vector<std::string>>
+Database::PopLeft(const std::string &key, size_t count) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return std::vector<std::string>{};
   }
 
   if (!std::holds_alternative<ListValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
+  std::vector<std::string> &list = std::get<ListValue>(entry->value).values;
   const size_t pop_count = std::min(count, list.size());
 
   std::vector<std::string> values;
@@ -256,104 +290,67 @@ Database::ListPopManyResult Database::PopLeft(const std::string& key,
     ++key_versions_[key];
   }
 
-  return {.values = std::move(values)};
+  return values;
 }
 
-Database::BlockingPopResult Database::BlockingPopLeft(
-    const std::string& key, std::chrono::steady_clock::duration timeout) {
+WaitOutcome
+Database::WaitForListReady(const std::string &key,
+                           std::chrono::steady_clock::duration timeout) {
   std::unique_lock<std::mutex> lock(mutex_);
-
-  auto list_ready = [&]() {
-    Entry* entry = FindLiveEntryLocked(key);
-    if (entry == nullptr) {
-      return false;
-    }
-
-    if (!std::holds_alternative<ListValue>(entry->value)) {
-      return true;
-    }
-
-    return !std::get<ListValue>(entry->value).values.empty();
+  auto ready = [&]() {
+    Entry *entry = FindLiveEntryLocked(key);
+    return entry != nullptr &&
+           (!std::holds_alternative<ListValue>(entry->value) ||
+            !std::get<ListValue>(entry->value).values.empty());
   };
-
-  Entry* entry = FindLiveEntryLocked(key);
-  if (entry != nullptr && !std::holds_alternative<ListValue>(entry->value)) {
-    return {.wrong_type = true};
-  }
 
   if (timeout == std::chrono::steady_clock::duration::zero()) {
-    list_change_cv_.wait(lock, list_ready);
-  } else if (!list_change_cv_.wait_for(lock, timeout, list_ready)) {
-    return {};
+    list_change_cv_.wait(lock, ready);
+    return WaitOutcome::kReady;
   }
-
-  entry = FindLiveEntryLocked(key);
-  if (entry == nullptr) {
-    return {};
-  }
-
-  if (!std::holds_alternative<ListValue>(entry->value)) {
-    return {.wrong_type = true};
-  }
-
-  std::vector<std::string>& list = std::get<ListValue>(entry->value).values;
-  if (list.empty()) {
-    return {};
-  }
-
-  std::string value = list.front();
-  list.erase(list.begin());
-  ++key_versions_[key];
-
-  return {
-      .found = true,
-      .key = key,
-      .value = std::move(value),
-  };
+  return list_change_cv_.wait_for(lock, timeout, ready)
+             ? WaitOutcome::kReady
+             : WaitOutcome::kTimedOut;
 }
 
-Database::StreamAddResult Database::XAdd(
-    const std::string& key, std::string id,
-    const std::vector<std::pair<std::string, std::string>>& fields) {
-  StreamAddResult result;
+DatabaseResult<std::string>
+Database::XAdd(const std::string &key, std::string id,
+               const std::vector<std::pair<std::string, std::string>> &fields) {
+  std::string stored_id;
   {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    StreamId new_id;
-    bool auto_generate_sequence = false;
-    bool auto_generate_milliseconds = false;
-    if (!ParseXAddStreamId(id, new_id, auto_generate_sequence,
-                           auto_generate_milliseconds)) {
-      return {.status = StreamAddResult::Status::kInvalidId};
+    const std::optional<ParsedXAddStreamId> parsed_id =
+        ParseXAddStreamId(id);
+    if (!parsed_id.has_value()) {
+      return tl::make_unexpected(
+          DatabaseError{.code = DatabaseErrorCode::kInvalidStreamId});
     }
+    StreamId new_id = parsed_id->id;
 
-    Entry* entry = FindLiveEntryLocked(key);
-    if (entry == nullptr) {
-      auto [it, _] = store_.emplace(key, Entry{
-                                             .value = StreamValue{},
-                                             .expires_at = std::nullopt,
-                                         });
-      entry = &it->second;
+    Entry *entry = FindLiveEntryLocked(key);
+    if (entry != nullptr &&
+        !std::holds_alternative<StreamValue>(entry->value)) {
+      return tl::make_unexpected(DatabaseError{
+          .code = DatabaseErrorCode::kWrongType,
+          .actual_type = EntryValueType(*entry),
+      });
     }
-
-    if (!std::holds_alternative<StreamValue>(entry->value)) {
-      return {.status = StreamAddResult::Status::kWrongType};
-    }
-
-    entry->expires_at.reset();
-    std::vector<StreamEntry>& entries =
-        std::get<StreamValue>(entry->value).entries;
 
     std::optional<StreamId> last_id;
-    if (!entries.empty()) {
-      StreamId parsed_last_id;
-      if (!ParseStreamId(entries.back().id, parsed_last_id)) {
-        return {.status = StreamAddResult::Status::kInvalidId};
+    if (entry != nullptr &&
+        !std::get<StreamValue>(entry->value).entries.empty()) {
+      const std::optional<StreamId> parsed_last_id = ParseStreamId(
+          std::get<StreamValue>(entry->value).entries.back().id);
+      if (!parsed_last_id.has_value()) {
+        return tl::make_unexpected(
+            DatabaseError{.code = DatabaseErrorCode::kInvalidStreamId});
       }
-      last_id = parsed_last_id;
+      last_id = *parsed_last_id;
     }
 
-    if (auto_generate_milliseconds) {
+    if (parsed_id->generation ==
+        XAddIdGenerationPolicy::kMillisecondsAndSequence) {
       const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now());
       new_id.milliseconds =
@@ -361,13 +358,21 @@ Database::StreamAddResult Database::XAdd(
 
       if (last_id.has_value() && new_id.milliseconds <= last_id->milliseconds) {
         new_id.milliseconds = last_id->milliseconds;
+        if (last_id->sequence == std::numeric_limits<int64_t>::max()) {
+          return tl::make_unexpected(
+              DatabaseError{.code = DatabaseErrorCode::kInvalidStreamId});
+        }
         new_id.sequence = last_id->sequence + 1;
       } else {
         new_id.sequence = 0;
       }
       id = FormatStreamId(new_id);
-    } else if (auto_generate_sequence) {
+    } else if (parsed_id->generation == XAddIdGenerationPolicy::kSequence) {
       if (last_id.has_value() && last_id->milliseconds == new_id.milliseconds) {
+        if (last_id->sequence == std::numeric_limits<int64_t>::max()) {
+          return tl::make_unexpected(
+              DatabaseError{.code = DatabaseErrorCode::kInvalidStreamId});
+        }
         new_id.sequence = last_id->sequence + 1;
       } else {
         new_id.sequence = (new_id.milliseconds == 0) ? 1 : 0;
@@ -375,233 +380,202 @@ Database::StreamAddResult Database::XAdd(
       id = FormatStreamId(new_id);
     }
 
-    if (CompareStreamIds(
-            new_id, StreamId{.milliseconds = 0, .sequence = 0}) <= 0) {
-      return {.status = StreamAddResult::Status::kIdNotGreaterThanZeroZero};
+    if (CompareStreamIds(new_id, StreamId{.milliseconds = 0, .sequence = 0}) <=
+        0) {
+      return tl::make_unexpected(DatabaseError{
+          .code = DatabaseErrorCode::kStreamIdNotGreaterThanZeroZero});
     }
     if (last_id.has_value() && CompareStreamIds(new_id, *last_id) <= 0) {
-      return {.status = StreamAddResult::Status::kIdNotGreaterThanTopItem};
+      return tl::make_unexpected(DatabaseError{
+          .code = DatabaseErrorCode::kStreamIdNotGreaterThanTopItem});
     }
+
+    if (entry == nullptr) {
+      auto [it, _] = store_.emplace(key, Entry{
+                                             .value = StreamValue{},
+                                             .expires_at = std::nullopt,
+                                         });
+      entry = &it->second;
+    }
+    entry->expires_at.reset();
+    std::vector<StreamEntry> &entries =
+        std::get<StreamValue>(entry->value).entries;
 
     entries.push_back(StreamEntry{
         .id = std::move(id),
         .fields = fields,
     });
     ++key_versions_[key];
+    ++stream_generation_;
 
-    result = {.status = StreamAddResult::Status::kOk, .id = entries.back().id};
+    stored_id = entries.back().id;
   }
 
-  std::cerr << "[XADD] added id=" << result.id << " key=" << key << " notify\n";
   stream_change_cv_.notify_all();
-  return result;
+  return stored_id;
 }
 
-Database::StreamRangeResult Database::XRange(const std::string& key,
-                                             std::string_view start,
-                                             std::string_view end) {
+DatabaseResult<std::vector<Database::StreamRangeEntry>>
+Database::XRange(const std::string &key, std::string_view start,
+                 std::string_view end) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  StreamId start_id;
-  StreamId end_id;
-  if (!ParseStreamRangeId(start, true, start_id) ||
-      !ParseStreamRangeId(end, false, end_id)) {
-    return {.invalid_id = true};
+  const std::optional<StreamId> start_id =
+      ParseStreamRangeId(start, StreamRangeBound::kStart);
+  const std::optional<StreamId> end_id =
+      ParseStreamRangeId(end, StreamRangeBound::kEnd);
+  if (!start_id.has_value() || !end_id.has_value()) {
+    return tl::make_unexpected(
+        DatabaseError{.code = DatabaseErrorCode::kInvalidStreamId});
   }
 
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return std::vector<StreamRangeEntry>{};
   }
 
   if (!std::holds_alternative<StreamValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  const std::vector<StreamEntry>& stream_entries =
+  const std::vector<StreamEntry> &stream_entries =
       std::get<StreamValue>(entry->value).entries;
   std::vector<StreamRangeEntry> entries;
-  for (const StreamEntry& stream_entry : stream_entries) {
-    StreamId current_id;
-    if (!ParseStreamId(stream_entry.id, current_id)) {
-      return {.invalid_id = true};
+  for (const StreamEntry &stream_entry : stream_entries) {
+    const std::optional<StreamId> current_id = ParseStreamId(stream_entry.id);
+    if (!current_id.has_value()) {
+      return tl::make_unexpected(
+          DatabaseError{.code = DatabaseErrorCode::kInvalidStreamId});
     }
 
-    if (CompareStreamIds(current_id, start_id) < 0) {
+    if (CompareStreamIds(*current_id, *start_id) < 0) {
       continue;
     }
-    if (CompareStreamIds(current_id, end_id) > 0) {
+    if (CompareStreamIds(*current_id, *end_id) > 0) {
       break;
     }
 
-    StreamRangeEntry result_entry{.id = stream_entry.id};
-    result_entry.values.reserve(stream_entry.fields.size() * 2);
-    for (const auto& [field, value] : stream_entry.fields) {
-      result_entry.values.push_back(field);
-      result_entry.values.push_back(value);
-    }
-    entries.push_back(std::move(result_entry));
+    entries.push_back(StreamRangeEntry{
+        .id = stream_entry.id,
+        .fields = stream_entry.fields,
+    });
   }
 
-  return {.entries = std::move(entries)};
+  return entries;
 }
 
-Database::StreamRangeResult Database::XRead(const std::string& key,
-                                            std::string_view start) {
+DatabaseResult<std::vector<Database::StreamRangeEntry>>
+Database::XRead(const std::string &key, std::string_view start) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  StreamId start_id;
-  if (!ParseStreamId(start, start_id)) {
-    return {.invalid_id = true};
+  const std::optional<StreamId> start_id = ParseStreamId(start);
+  if (!start_id.has_value()) {
+    return tl::make_unexpected(
+        DatabaseError{.code = DatabaseErrorCode::kInvalidStreamId});
   }
 
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return std::vector<StreamRangeEntry>{};
   }
 
   if (!std::holds_alternative<StreamValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  const std::vector<StreamEntry>& stream_entries =
+  const std::vector<StreamEntry> &stream_entries =
       std::get<StreamValue>(entry->value).entries;
   std::vector<StreamRangeEntry> entries;
-  for (const StreamEntry& stream_entry : stream_entries) {
-    StreamId current_id;
-    if (!ParseStreamId(stream_entry.id, current_id)) {
-      return {.invalid_id = true};
+  for (const StreamEntry &stream_entry : stream_entries) {
+    const std::optional<StreamId> current_id = ParseStreamId(stream_entry.id);
+    if (!current_id.has_value()) {
+      return tl::make_unexpected(
+          DatabaseError{.code = DatabaseErrorCode::kInvalidStreamId});
     }
 
-    if (CompareStreamIds(current_id, start_id) <= 0) {
+    if (CompareStreamIds(*current_id, *start_id) <= 0) {
       continue;
     }
 
-    StreamRangeEntry result_entry{.id = stream_entry.id};
-    result_entry.values.reserve(stream_entry.fields.size() * 2);
-    for (const auto& [field, value] : stream_entry.fields) {
-      result_entry.values.push_back(field);
-      result_entry.values.push_back(value);
-    }
-    entries.push_back(std::move(result_entry));
+    entries.push_back(StreamRangeEntry{
+        .id = stream_entry.id,
+        .fields = stream_entry.fields,
+    });
   }
 
-  return {.entries = std::move(entries)};
+  return entries;
 }
 
-Database::BlockingStreamReadResult Database::BlockingXRead(
-    const std::vector<std::pair<std::string, std::string>>& streams,
-    std::chrono::steady_clock::duration timeout) {
-  std::unique_lock<std::mutex> lock(mutex_);
-
-  // Resolve '$' to the current last ID of each stream before waiting.
-  std::vector<std::pair<std::string, std::string>> resolved_streams;
-  resolved_streams.reserve(streams.size());
-  for (const auto& [key, start] : streams) {
-    if (start == "$") {
-      std::string last_id = "0-0";
-      Entry* entry = FindLiveEntryLocked(key);
-      if (entry != nullptr && std::holds_alternative<StreamValue>(entry->value)) {
-        const std::vector<StreamEntry>& entries =
-            std::get<StreamValue>(entry->value).entries;
-        if (!entries.empty()) {
-          last_id = entries.back().id;
-        }
-      }
-      resolved_streams.emplace_back(key, std::move(last_id));
-      std::cerr << "[XREAD_BLOCK] $ resolved to last_id=" << resolved_streams.back().second << " key=" << key << "\n";
-    } else {
-      resolved_streams.emplace_back(key, start);
-    }
-  }
-
-  BlockingStreamReadResult result;
-  auto read_streams = [&]() -> bool {
-    result = {};
-    result.streams.reserve(resolved_streams.size());
-
-    for (const auto& [key, start] : resolved_streams) {
-      StreamId start_id;
-      if (!ParseStreamId(start, start_id)) {
-        result.invalid_id = true;
-        return true;
-      }
-
-      Entry* entry = FindLiveEntryLocked(key);
-      if (entry == nullptr) {
-        continue;
-      }
-
-      if (!std::holds_alternative<StreamValue>(entry->value)) {
-        result.wrong_type = true;
-        return true;
-      }
-
-      const std::vector<StreamEntry>& stream_entries =
-          std::get<StreamValue>(entry->value).entries;
-      std::vector<StreamRangeEntry> entries;
-      for (const StreamEntry& stream_entry : stream_entries) {
-        StreamId current_id;
-        if (!ParseStreamId(stream_entry.id, current_id)) {
-          result.invalid_id = true;
-          return true;
-        }
-
-        if (CompareStreamIds(current_id, start_id) <= 0) {
-          continue;
-        }
-
-        StreamRangeEntry result_entry{.id = stream_entry.id};
-        result_entry.values.reserve(stream_entry.fields.size() * 2);
-        for (const auto& [field, value] : stream_entry.fields) {
-          result_entry.values.push_back(field);
-          result_entry.values.push_back(value);
-        }
-        entries.push_back(std::move(result_entry));
-      }
-
-      if (!entries.empty()) {
-        result.streams.emplace_back(key, std::move(entries));
-      }
-    }
-
-    return result.wrong_type || result.invalid_id || !result.streams.empty();
-  };
-
-  if (read_streams()) {
-    std::cerr << "[XREAD_BLOCK] immediate result (data already available)\n";
-    return result;
-  }
-
-  std::cerr << "[XREAD_BLOCK] blocking, timeout=" << std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count() << "ms\n";
-  if (timeout == std::chrono::steady_clock::duration::zero()) {
-    stream_change_cv_.wait(lock, read_streams);
-    std::cerr << "[XREAD_BLOCK] woke up (infinite wait)\n";
-    return result;
-  }
-
-  if (!stream_change_cv_.wait_for(lock, timeout, read_streams)) {
-    std::cerr << "[XREAD_BLOCK] timed out\n";
-    return {};
-  }
-
-  std::cerr << "[XREAD_BLOCK] woke up (timed wait)\n";
-  return result;
-}
-
-Database::IncrResult Database::Incr(const std::string& key) {
+DatabaseResult<std::optional<std::string>>
+Database::LastStreamId(const std::string &key) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
+  if (entry == nullptr) {
+    return std::optional<std::string>{};
+  }
+  if (!std::holds_alternative<StreamValue>(entry->value)) {
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
+  }
+
+  const auto &entries = std::get<StreamValue>(entry->value).entries;
+  if (entries.empty()) {
+    return std::optional<std::string>{};
+  }
+  return std::optional<std::string>{entries.back().id};
+}
+
+uint64_t Database::StreamGeneration() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return stream_generation_;
+}
+
+WaitOutcome
+Database::WaitForStreamChange(uint64_t observed_generation,
+                              std::chrono::steady_clock::duration timeout) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  auto changed = [&] { return stream_generation_ != observed_generation; };
+  if (timeout == std::chrono::steady_clock::duration::zero()) {
+    stream_change_cv_.wait(lock, changed);
+    return WaitOutcome::kReady;
+  }
+  return stream_change_cv_.wait_for(lock, timeout, changed)
+             ? WaitOutcome::kReady
+             : WaitOutcome::kTimedOut;
+}
+
+DatabaseResult<int64_t> Database::Incr(const std::string &key) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Entry *entry = FindLiveEntryLocked(key);
 
   int64_t current = 0;
   if (entry != nullptr) {
     if (!std::holds_alternative<StringValue>(entry->value)) {
-      return {.wrong_type = true};
+      return tl::make_unexpected(DatabaseError{
+          .code = DatabaseErrorCode::kWrongType,
+          .actual_type = EntryValueType(*entry),
+      });
     }
-    const std::string& str = std::get<StringValue>(entry->value).value;
-    if (!ParseSignedInteger(str, current)) {
-      return {.not_integer = true};
+    const std::string &str = std::get<StringValue>(entry->value).value;
+    const std::optional<int64_t> parsed = ParseSignedInteger(str);
+    if (!parsed.has_value()) {
+      return tl::make_unexpected(
+          DatabaseError{.code = DatabaseErrorCode::kInvalidInteger});
     }
+    current = *parsed;
+  }
+
+  if (current == std::numeric_limits<int64_t>::max()) {
+    return tl::make_unexpected(
+        DatabaseError{.code = DatabaseErrorCode::kIntegerOverflow});
   }
 
   const int64_t new_value = current + 1;
@@ -616,14 +590,14 @@ Database::IncrResult Database::Incr(const std::string& key) {
   }
   ++key_versions_[key];
 
-  return {.value = new_value};
+  return new_value;
 }
 
-Database::ZAddResult Database::ZAdd(const std::string& key, double score,
-                                    const std::string& score_text,
-                                    const std::string& member) {
+DatabaseResult<int64_t> Database::ZAdd(const std::string &key, double score,
+                                       const std::string &score_text,
+                                       const std::string &member) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
     auto [it, _] = store_.emplace(key, Entry{
                                            .value = SortedSetValue{},
@@ -633,13 +607,16 @@ Database::ZAddResult Database::ZAdd(const std::string& key, double score,
   }
 
   if (!std::holds_alternative<SortedSetValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
   entry->expires_at.reset();
-  std::vector<SortedSetEntry>& entries =
+  std::vector<SortedSetEntry> &entries =
       std::get<SortedSetValue>(entry->value).entries;
-  for (SortedSetEntry& existing : entries) {
+  for (SortedSetEntry &existing : entries) {
     if (existing.member != member) {
       continue;
     }
@@ -647,65 +624,71 @@ Database::ZAddResult Database::ZAdd(const std::string& key, double score,
     existing.score = score;
     existing.score_text = score_text;
     std::sort(entries.begin(), entries.end(),
-              [](const SortedSetEntry& lhs, const SortedSetEntry& rhs) {
+              [](const SortedSetEntry &lhs, const SortedSetEntry &rhs) {
                 if (lhs.score != rhs.score) {
                   return lhs.score < rhs.score;
                 }
                 return lhs.member < rhs.member;
               });
     ++key_versions_[key];
-    return {.added = 0};
+    return int64_t{0};
   }
 
-  entries.push_back(
-      SortedSetEntry{.member = member, .score = score, .score_text = score_text});
+  entries.push_back(SortedSetEntry{
+      .member = member, .score = score, .score_text = score_text});
   std::sort(entries.begin(), entries.end(),
-            [](const SortedSetEntry& lhs, const SortedSetEntry& rhs) {
+            [](const SortedSetEntry &lhs, const SortedSetEntry &rhs) {
               if (lhs.score != rhs.score) {
                 return lhs.score < rhs.score;
               }
               return lhs.member < rhs.member;
             });
   ++key_versions_[key];
-  return {.added = 1};
+  return int64_t{1};
 }
 
-Database::ZRankResult Database::ZRank(const std::string& key,
-                                      const std::string& member) {
+DatabaseResult<std::optional<int64_t>>
+Database::ZRank(const std::string &key, const std::string &member) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return std::optional<int64_t>{};
   }
 
   if (!std::holds_alternative<SortedSetValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  const std::vector<SortedSetEntry>& entries =
+  const std::vector<SortedSetEntry> &entries =
       std::get<SortedSetValue>(entry->value).entries;
   for (size_t index = 0; index < entries.size(); ++index) {
     if (entries[index].member == member) {
-      return {.found = true, .rank = static_cast<int64_t>(index)};
+      return std::optional<int64_t>{static_cast<int64_t>(index)};
     }
   }
 
-  return {};
+  return std::optional<int64_t>{};
 }
 
-Database::ZRangeResult Database::ZRange(const std::string& key, int64_t start,
-                                        int64_t stop) {
+DatabaseResult<std::vector<std::string>>
+Database::ZRange(const std::string &key, int64_t start, int64_t stop) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return std::vector<std::string>{};
   }
 
   if (!std::holds_alternative<SortedSetValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  const std::vector<SortedSetEntry>& entries =
+  const std::vector<SortedSetEntry> &entries =
       std::get<SortedSetValue>(entry->value).entries;
   const int64_t entry_count = static_cast<int64_t>(entries.size());
 
@@ -719,10 +702,10 @@ Database::ZRangeResult Database::ZRange(const std::string& key, int64_t start,
     start = 0;
   }
   if (stop < 0) {
-    stop = 0;
+    return std::vector<std::string>{};
   }
   if (start >= entry_count || start > stop) {
-    return {};
+    return std::vector<std::string>{};
   }
   if (stop >= entry_count) {
     stop = entry_count - 1;
@@ -734,103 +717,117 @@ Database::ZRangeResult Database::ZRange(const std::string& key, int64_t start,
     members.push_back(entries[static_cast<size_t>(index)].member);
   }
 
-  return {.members = std::move(members)};
+  return members;
 }
 
-Database::ZCardResult Database::ZCard(const std::string& key) {
+DatabaseResult<int64_t> Database::ZCard(const std::string &key) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return int64_t{0};
   }
 
   if (!std::holds_alternative<SortedSetValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  return {.cardinality = static_cast<int64_t>(
-              std::get<SortedSetValue>(entry->value).entries.size())};
+  return static_cast<int64_t>(
+      std::get<SortedSetValue>(entry->value).entries.size());
 }
 
-Database::ZScoreResult Database::ZScore(const std::string& key,
-                                        const std::string& member) {
+DatabaseResult<std::optional<std::string>>
+Database::ZScore(const std::string &key, const std::string &member) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return std::optional<std::string>{};
   }
 
   if (!std::holds_alternative<SortedSetValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  const std::vector<SortedSetEntry>& entries =
+  const std::vector<SortedSetEntry> &entries =
       std::get<SortedSetValue>(entry->value).entries;
-  for (const SortedSetEntry& existing : entries) {
+  for (const SortedSetEntry &existing : entries) {
     if (existing.member == member) {
-      return {.found = true, .score = existing.score_text};
+      return std::optional<std::string>{existing.score_text};
     }
   }
 
-  return {};
+  return std::optional<std::string>{};
 }
 
-Database::ZRemResult Database::ZRem(const std::string& key,
-                                    const std::string& member) {
+DatabaseResult<int64_t> Database::ZRem(const std::string &key,
+                                       const std::string &member) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return int64_t{0};
   }
 
   if (!std::holds_alternative<SortedSetValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  std::vector<SortedSetEntry>& entries =
+  std::vector<SortedSetEntry> &entries =
       std::get<SortedSetValue>(entry->value).entries;
-  const auto it = std::find_if(
-      entries.begin(), entries.end(),
-      [&](const SortedSetEntry& existing) { return existing.member == member; });
+  const auto it = std::find_if(entries.begin(), entries.end(),
+                               [&](const SortedSetEntry &existing) {
+                                 return existing.member == member;
+                               });
   if (it == entries.end()) {
-    return {};
+    return int64_t{0};
   }
 
   entries.erase(it);
   ++key_versions_[key];
-  return {.removed = 1};
+  return int64_t{1};
 }
 
-uint64_t Database::KeyVersion(const std::string& key) {
+uint64_t Database::KeyVersion(const std::string &key) {
   std::lock_guard<std::mutex> lock(mutex_);
   (void)FindLiveEntryLocked(key);
   const auto found = key_versions_.find(key);
   return found == key_versions_.end() ? 0 : found->second;
 }
 
-Database::ZEntriesResult Database::ZEntries(const std::string& key) {
+DatabaseResult<std::vector<std::pair<std::string, std::string>>>
+Database::ZEntries(const std::string &key) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Entry* entry = FindLiveEntryLocked(key);
+  Entry *entry = FindLiveEntryLocked(key);
   if (entry == nullptr) {
-    return {};
+    return std::vector<std::pair<std::string, std::string>>{};
   }
 
   if (!std::holds_alternative<SortedSetValue>(entry->value)) {
-    return {.wrong_type = true};
+    return tl::make_unexpected(DatabaseError{
+        .code = DatabaseErrorCode::kWrongType,
+        .actual_type = EntryValueType(*entry),
+    });
   }
 
-  const std::vector<SortedSetEntry>& stored_entries =
+  const std::vector<SortedSetEntry> &stored_entries =
       std::get<SortedSetValue>(entry->value).entries;
   std::vector<std::pair<std::string, std::string>> entries;
   entries.reserve(stored_entries.size());
-  for (const SortedSetEntry& stored_entry : stored_entries) {
+  for (const SortedSetEntry &stored_entry : stored_entries) {
     entries.emplace_back(stored_entry.member, stored_entry.score_text);
   }
 
-  return {.entries = std::move(entries)};
+  return entries;
 }
 
-Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
+Database::Entry *Database::FindLiveEntryLocked(const std::string &key) {
   const auto found = store_.find(key);
   if (found == store_.end()) {
     return nullptr;
@@ -846,77 +843,92 @@ Database::Entry* Database::FindLiveEntryLocked(const std::string& key) {
   return &found->second;
 }
 
-bool Database::ParseStreamId(std::string_view value, StreamId& id) {
+std::optional<Database::StreamId>
+Database::ParseStreamId(std::string_view value) {
   const size_t separator = value.find('-');
   if (separator == std::string_view::npos || separator == 0 ||
       separator == value.size() - 1) {
-    return false;
+    return std::nullopt;
   }
 
-  return ParseMilliseconds(value.substr(0, separator), id.milliseconds) &&
-         ParseMilliseconds(value.substr(separator + 1), id.sequence);
+  const std::optional<int64_t> milliseconds =
+      ParseNonNegativeInteger(value.substr(0, separator));
+  const std::optional<int64_t> sequence =
+      ParseNonNegativeInteger(value.substr(separator + 1));
+  if (!milliseconds.has_value() || !sequence.has_value()) {
+    return std::nullopt;
+  }
+  return StreamId{.milliseconds = *milliseconds, .sequence = *sequence};
 }
 
-bool Database::ParseXAddStreamId(std::string_view value, StreamId& id,
-                                 bool& auto_generate_sequence,
-                                 bool& auto_generate_milliseconds) {
-  auto_generate_sequence = false;
-  auto_generate_milliseconds = false;
+std::optional<Database::ParsedXAddStreamId>
+Database::ParseXAddStreamId(std::string_view value) {
   if (value == "*") {
-    id = {};
-    auto_generate_sequence = true;
-    auto_generate_milliseconds = true;
-    return true;
+    return ParsedXAddStreamId{
+        .id = {},
+        .generation = XAddIdGenerationPolicy::kMillisecondsAndSequence,
+    };
   }
 
-  if (ParseStreamId(value, id)) {
-    return true;
+  const std::optional<StreamId> exact_id = ParseStreamId(value);
+  if (exact_id.has_value()) {
+    return ParsedXAddStreamId{.id = *exact_id};
   }
 
   const size_t separator = value.find('-');
   if (separator == std::string_view::npos || separator == 0 ||
       separator != value.size() - 2 || value.back() != '*') {
-    return false;
+    return std::nullopt;
   }
 
-  if (!ParseMilliseconds(value.substr(0, separator), id.milliseconds)) {
-    return false;
+  const std::optional<int64_t> milliseconds =
+      ParseNonNegativeInteger(value.substr(0, separator));
+  if (!milliseconds.has_value()) {
+    return std::nullopt;
   }
 
-  id.sequence = 0;
-  auto_generate_sequence = true;
-  return true;
+  return ParsedXAddStreamId{
+      .id = StreamId{.milliseconds = *milliseconds, .sequence = 0},
+      .generation = XAddIdGenerationPolicy::kSequence,
+  };
 }
 
-bool Database::ParseStreamRangeId(std::string_view value, bool is_start,
-                                  StreamId& id) {
+std::optional<Database::StreamId>
+Database::ParseStreamRangeId(std::string_view value, StreamRangeBound bound) {
   if (value == "-") {
-    id = {};
-    return true;
+    return StreamId{};
   }
   if (value == "+") {
-    id.milliseconds = std::numeric_limits<int64_t>::max();
-    id.sequence = std::numeric_limits<int64_t>::max();
-    return true;
+    return StreamId{
+        .milliseconds = std::numeric_limits<int64_t>::max(),
+        .sequence = std::numeric_limits<int64_t>::max(),
+    };
   }
 
-  if (ParseStreamId(value, id)) {
-    return true;
+  const std::optional<StreamId> exact_id = ParseStreamId(value);
+  if (exact_id.has_value()) {
+    return exact_id;
   }
 
-  if (!ParseMilliseconds(value, id.milliseconds)) {
-    return false;
+  const std::optional<int64_t> milliseconds =
+      ParseNonNegativeInteger(value);
+  if (!milliseconds.has_value()) {
+    return std::nullopt;
   }
 
-  id.sequence = is_start ? 0 : std::numeric_limits<int64_t>::max();
-  return true;
+  return StreamId{
+      .milliseconds = *milliseconds,
+      .sequence = bound == StreamRangeBound::kStart
+                      ? 0
+                      : std::numeric_limits<int64_t>::max(),
+  };
 }
 
-std::string Database::FormatStreamId(const StreamId& id) {
+std::string Database::FormatStreamId(const StreamId &id) {
   return std::to_string(id.milliseconds) + "-" + std::to_string(id.sequence);
 }
 
-int Database::CompareStreamIds(const StreamId& lhs, const StreamId& rhs) {
+int Database::CompareStreamIds(const StreamId &lhs, const StreamId &rhs) {
   if (lhs.milliseconds < rhs.milliseconds) {
     return -1;
   }
@@ -932,7 +944,7 @@ int Database::CompareStreamIds(const StreamId& lhs, const StreamId& rhs) {
   return 0;
 }
 
-ValueType Database::EntryValueType(const Entry& entry) {
+ValueType Database::EntryValueType(const Entry &entry) {
   if (std::holds_alternative<StringValue>(entry.value)) {
     return ValueType::kString;
   }
@@ -945,9 +957,9 @@ ValueType Database::EntryValueType(const Entry& entry) {
   return ValueType::kSortedSet;
 }
 
-bool Database::IsExpired(const Entry& entry,
+bool Database::IsExpired(const Entry &entry,
                          std::chrono::steady_clock::time_point now) {
   return entry.expires_at.has_value() && now >= *entry.expires_at;
 }
 
-}  // namespace redis
+} // namespace redis

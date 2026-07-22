@@ -1,15 +1,16 @@
 #include "redis-cpp/command_executor.hpp"
 
-#include <cerrno>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include "redis-cpp/numeric_parser.hpp"
 
 namespace redis {
 namespace {
@@ -19,23 +20,12 @@ constexpr double kMaxLongitude = 180.0;
 constexpr double kMinLatitude = -85.05112878;
 constexpr double kMaxLatitude = 85.05112878;
 constexpr int kGeoStepBits = 26;
+constexpr uint64_t kMaxGeoScore = (1ULL << (kGeoStepBits * 2)) - 1;
 constexpr double kEarthRadiusMeters = 6372797.560856;
 constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
 constexpr double kMetersPerKilometer = 1000.0;
 constexpr double kMetersPerMile = 1609.344;
 constexpr double kMetersPerFoot = 0.3048;
-
-bool ParseDouble(std::string_view data, double& value) {
-  if (data.empty()) {
-    return false;
-  }
-
-  errno = 0;
-  char* parse_end = nullptr;
-  const std::string text(data);
-  value = std::strtod(text.c_str(), &parse_end);
-  return parse_end == text.c_str() + text.size() && errno != ERANGE;
-}
 
 uint64_t EncodeGeoScore(double longitude, double latitude) {
   double longitude_min = kMinLongitude;
@@ -122,34 +112,41 @@ double GeoDistanceMeters(double longitude_a, double latitude_a, double longitude
   return 2.0 * kEarthRadiusMeters * std::asin(std::sqrt(haversine));
 }
 
-bool DecodeGeoMember(Database& database, const std::string& key,
-                     const std::string& member, double& longitude,
-                     double& latitude, bool& wrong_type) {
-  const Database::ZScoreResult result = database.ZScore(key, member);
-  if (result.wrong_type) {
-    wrong_type = true;
-    return false;
+struct GeoPosition {
+  double longitude = 0.0;
+  double latitude = 0.0;
+};
+
+DatabaseResult<std::optional<GeoPosition>> DecodeGeoMember(
+    Database& database, const std::string& key, const std::string& member) {
+  const DatabaseResult<std::optional<std::string>> result =
+      database.ZScore(key, member);
+  if (!result) {
+    return tl::make_unexpected(result.error());
   }
-  if (!result.found) {
-    return false;
+  if (!result->has_value()) {
+    return std::optional<GeoPosition>{};
   }
 
-  double score = 0.0;
-  if (!ParseDouble(result.score, score) || score < 0.0) {
-    return false;
+  const std::optional<double> score = ParseFiniteDouble(**result);
+  if (!score.has_value() || *score < 0.0 ||
+      *score > static_cast<double>(kMaxGeoScore)) {
+    return std::optional<GeoPosition>{};
   }
 
-  const auto decoded = DecodeGeoScore(static_cast<uint64_t>(score));
-  longitude = decoded.first;
-  latitude = decoded.second;
-  return true;
+  const auto [longitude, latitude] =
+      DecodeGeoScore(static_cast<uint64_t>(*score));
+  return std::optional<GeoPosition>{GeoPosition{
+      .longitude = longitude,
+      .latitude = latitude,
+  }};
 }
 
-bool ParseGeoDistanceMeters(std::string_view radius_text, std::string_view unit_text,
-                            double& radius_meters) {
-  double radius = 0.0;
-  if (!ParseDouble(radius_text, radius)) {
-    return false;
+std::optional<double> ParseGeoDistanceMeters(std::string_view radius_text,
+                                             std::string_view unit_text) {
+  const std::optional<double> radius = ParseFiniteDouble(radius_text);
+  if (!radius.has_value()) {
+    return std::nullopt;
   }
 
   const std::string unit = ToUpperAscii(std::string(unit_text));
@@ -163,11 +160,10 @@ bool ParseGeoDistanceMeters(std::string_view radius_text, std::string_view unit_
   } else if (unit == "FT") {
     multiplier = kMetersPerFoot;
   } else {
-    return false;
+    return std::nullopt;
   }
 
-  radius_meters = radius * multiplier;
-  return true;
+  return *radius * multiplier;
 }
 
 }  // namespace
@@ -179,29 +175,28 @@ CommandResult CommandExecutor::HandleGeoadd(
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "geoadd"});
   }
 
-  double longitude = 0.0;
-  double latitude = 0.0;
+  const std::optional<double> longitude = ParseFiniteDouble(args[2]);
+  const std::optional<double> latitude = ParseFiniteDouble(args[3]);
   const bool longitude_valid =
-      ParseDouble(args[2], longitude) && longitude >= kMinLongitude &&
-      longitude <= kMaxLongitude;
+      longitude.has_value() && *longitude >= kMinLongitude &&
+      *longitude <= kMaxLongitude;
   const bool latitude_valid =
-      ParseDouble(args[3], latitude) && latitude >= kMinLatitude &&
-      latitude <= kMaxLatitude;
+      latitude.has_value() && *latitude >= kMinLatitude &&
+      *latitude <= kMaxLatitude;
   if (!longitude_valid || !latitude_valid) {
     return tl::make_unexpected(CommandError{
         .code = CommandErrorCode::kInvalidGeoCoordinates, .command = "geoadd"});
   }
 
-  const uint64_t geo_score = EncodeGeoScore(longitude, latitude);
-  const Database::ZAddResult result = database_.ZAdd(
+  const uint64_t geo_score = EncodeGeoScore(*longitude, *latitude);
+  const DatabaseResult<int64_t> result = database_.ZAdd(
       args[1], static_cast<double>(geo_score), std::to_string(geo_score),
       args[4]);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "geoadd"});
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "geoadd"));
   }
 
-  return RespInteger{result.added};
+  return RespInteger{*result};
 }
 
 CommandResult CommandExecutor::HandleGeopos(
@@ -211,34 +206,35 @@ CommandResult CommandExecutor::HandleGeopos(
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "geopos"});
   }
 
-  std::string response = "*" + std::to_string(args.size() - 2) + "\r\n";
+  std::vector<RespValue> positions;
+  positions.reserve(args.size() - 2);
   for (size_t index = 2; index < args.size(); ++index) {
-    const Database::ZScoreResult result = database_.ZScore(args[1], args[index]);
-    if (result.wrong_type) {
+    const DatabaseResult<std::optional<std::string>> result =
+        database_.ZScore(args[1], args[index]);
+    if (!result) {
       return tl::make_unexpected(
-          CommandError{.code = CommandErrorCode::kWrongType, .command = "geopos"});
+          MapDatabaseError(result.error(), "geopos"));
     }
 
-    if (!result.found) {
-      response += "*-1\r\n";
+    if (!result->has_value()) {
+      positions.emplace_back(RespNullArray{});
       continue;
     }
 
-    double score = 0.0;
-    if (!ParseDouble(result.score, score) || score < 0.0) {
-      response += "*-1\r\n";
+    const std::optional<double> score = ParseFiniteDouble(**result);
+    if (!score.has_value() || *score < 0.0 ||
+        *score > static_cast<double>(kMaxGeoScore)) {
+      positions.emplace_back(RespNullArray{});
       continue;
     }
 
     const auto [longitude, latitude] =
-        DecodeGeoScore(static_cast<uint64_t>(score));
-    response += "*2\r\n";
-    response +=
-        RespWriter::Write(RespBulkString{FormatGeoCoordinate(longitude)});
-    response += RespWriter::Write(RespBulkString{FormatGeoCoordinate(latitude)});
+        DecodeGeoScore(static_cast<uint64_t>(*score));
+    positions.emplace_back(RespArray::BulkStrings(
+        {FormatGeoCoordinate(longitude), FormatGeoCoordinate(latitude)}));
   }
 
-  return RespRaw{std::move(response)};
+  return RespArray{std::move(positions)};
 }
 
 CommandResult CommandExecutor::HandleGeodist(
@@ -248,32 +244,28 @@ CommandResult CommandExecutor::HandleGeodist(
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "geodist"});
   }
 
-  bool wrong_type = false;
-  double longitude_a = 0.0;
-  double latitude_a = 0.0;
-  if (!DecodeGeoMember(database_, args[1], args[2], longitude_a, latitude_a,
-                       wrong_type)) {
-    if (wrong_type) {
-      return tl::make_unexpected(
-          CommandError{.code = CommandErrorCode::kWrongType, .command = "geodist"});
-    }
+  const DatabaseResult<std::optional<GeoPosition>> first =
+      DecodeGeoMember(database_, args[1], args[2]);
+  if (!first) {
+    return tl::make_unexpected(MapDatabaseError(first.error(), "geodist"));
+  }
+  if (!first->has_value()) {
     return RespNullBulk{};
   }
 
-  double longitude_b = 0.0;
-  double latitude_b = 0.0;
-  if (!DecodeGeoMember(database_, args[1], args[3], longitude_b, latitude_b,
-                       wrong_type)) {
-    if (wrong_type) {
-      return tl::make_unexpected(
-          CommandError{.code = CommandErrorCode::kWrongType, .command = "geodist"});
-    }
+  const DatabaseResult<std::optional<GeoPosition>> second =
+      DecodeGeoMember(database_, args[1], args[3]);
+  if (!second) {
+    return tl::make_unexpected(MapDatabaseError(second.error(), "geodist"));
+  }
+  if (!second->has_value()) {
     return RespNullBulk{};
   }
 
   std::ostringstream stream;
   stream << std::fixed << std::setprecision(4)
-         << GeoDistanceMeters(longitude_a, latitude_a, longitude_b, latitude_b);
+         << GeoDistanceMeters((*first)->longitude, (*first)->latitude,
+                              (*second)->longitude, (*second)->latitude);
   return RespBulkString{stream.str()};
 }
 
@@ -289,42 +281,47 @@ CommandResult CommandExecutor::HandleGeosearch(
         .code = CommandErrorCode::kSyntaxError, .command = "geosearch"});
   }
 
-  double center_longitude = 0.0;
-  double center_latitude = 0.0;
-  if (!ParseDouble(args[3], center_longitude) ||
-      !ParseDouble(args[4], center_latitude)) {
+  const std::optional<double> center_longitude =
+      ParseFiniteDouble(args[3]);
+  const std::optional<double> center_latitude = ParseFiniteDouble(args[4]);
+  if (!center_longitude.has_value() || !center_latitude.has_value()) {
     return tl::make_unexpected(CommandError{
         .code = CommandErrorCode::kSyntaxError, .command = "geosearch"});
   }
 
-  double radius_meters = 0.0;
-  if (!ParseGeoDistanceMeters(args[6], args[7], radius_meters)) {
+  const std::optional<double> radius_meters =
+      ParseGeoDistanceMeters(args[6], args[7]);
+  if (!radius_meters.has_value()) {
     return tl::make_unexpected(CommandError{
         .code = CommandErrorCode::kSyntaxError, .command = "geosearch"});
   }
 
-  const Database::ZEntriesResult entries = database_.ZEntries(args[1]);
-  if (entries.wrong_type) {
-    return tl::make_unexpected(CommandError{
-        .code = CommandErrorCode::kWrongType, .command = "geosearch"});
+  const DatabaseResult<
+      std::vector<std::pair<std::string, std::string>>>
+      entries = database_.ZEntries(args[1]);
+  if (!entries) {
+    return tl::make_unexpected(
+        MapDatabaseError(entries.error(), "geosearch"));
   }
 
   std::vector<std::string> matches;
-  for (const auto& [member, score_text] : entries.entries) {
-    double score = 0.0;
-    if (!ParseDouble(score_text, score) || score < 0.0) {
+  for (const auto& [member, score_text] : *entries) {
+    const std::optional<double> score = ParseFiniteDouble(score_text);
+    if (!score.has_value() || *score < 0.0 ||
+        *score > static_cast<double>(kMaxGeoScore)) {
       continue;
     }
 
     const auto [member_longitude, member_latitude] =
-        DecodeGeoScore(static_cast<uint64_t>(score));
-    if (GeoDistanceMeters(center_longitude, center_latitude, member_longitude,
-                          member_latitude) <= radius_meters) {
+        DecodeGeoScore(static_cast<uint64_t>(*score));
+    if (GeoDistanceMeters(*center_longitude, *center_latitude,
+                          member_longitude, member_latitude) <=
+        *radius_meters) {
       matches.push_back(member);
     }
   }
 
-  return RespArray{matches};
+  return RespArray::BulkStrings(matches);
 }
 
 }  // namespace redis

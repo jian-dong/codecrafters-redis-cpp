@@ -39,13 +39,13 @@ TEST(RdbLoaderTest, ImportsSingleStringKey) {
                  static_cast<std::streamsize>(rdb_bytes.size()));
   }
 
-  LoadDatabaseFromRdb(config, database);
+  ASSERT_TRUE(LoadDatabaseFromRdb(config, database).has_value());
   CommandExecutor executor(database, false);
 
   redis::CommandResult result = executor.Execute({"KEYS", "*"});
   ASSERT_TRUE((result.has_value())) << "KEYS * should succeed after loading RDB";
-  ASSERT_TRUE((std::holds_alternative<RespArray>(*result))) << "KEYS * should return a RESP array after loading RDB";
-  ASSERT_TRUE((std::get<RespArray>(*result).values ==
+  ASSERT_TRUE((result->Is<RespArray>())) << "KEYS * should return a RESP array after loading RDB";
+  ASSERT_TRUE((RespBulkStrings(result->Get<RespArray>()) ==
              std::vector<std::string>({"foo"}))) << "RDB loader should import the single key from the RDB file";
 
   std::filesystem::remove(file_path);
@@ -77,13 +77,13 @@ TEST(RdbLoaderTest, MakesLoadedValueAvailableToGet) {
                  static_cast<std::streamsize>(rdb_bytes.size()));
   }
 
-  LoadDatabaseFromRdb(config, database);
+  ASSERT_TRUE(LoadDatabaseFromRdb(config, database).has_value());
   CommandExecutor executor(database, false);
 
   redis::CommandResult result = executor.Execute({"GET", "foo"});
   ASSERT_TRUE((result.has_value())) << "GET foo should succeed after loading RDB";
-  ASSERT_TRUE((std::holds_alternative<redis::RespBulkString>(*result))) << "GET foo should return a RESP bulk string after loading RDB";
-  ASSERT_TRUE((std::get<redis::RespBulkString>(*result).value == "bar")) << "GET foo should return the loaded value from the RDB file";
+  ASSERT_TRUE((result->Is<redis::RespBulkString>())) << "GET foo should return a RESP bulk string after loading RDB";
+  ASSERT_TRUE((result->Get<redis::RespBulkString>().value == "bar")) << "GET foo should return the loaded value from the RDB file";
   ASSERT_TRUE((RespWriter::Write(*result) == "$3\r\nbar\r\n")) << "GET foo should encode the loaded value as a RESP bulk string";
 
   std::filesystem::remove(file_path);
@@ -116,18 +116,18 @@ TEST(RdbLoaderTest, ImportsMultipleStringValues) {
                  static_cast<std::streamsize>(rdb_bytes.size()));
   }
 
-  LoadDatabaseFromRdb(config, database);
+  ASSERT_TRUE(LoadDatabaseFromRdb(config, database).has_value());
   CommandExecutor executor(database, false);
 
   redis::CommandResult foo_result = executor.Execute({"GET", "foo"});
   ASSERT_TRUE((foo_result.has_value())) << "GET foo should succeed after loading RDB";
-  ASSERT_TRUE((std::holds_alternative<redis::RespBulkString>(*foo_result))) << "GET foo should return a RESP bulk string";
-  ASSERT_TRUE((std::get<redis::RespBulkString>(*foo_result).value == "one")) << "GET foo should return the first loaded value";
+  ASSERT_TRUE((foo_result->Is<redis::RespBulkString>())) << "GET foo should return a RESP bulk string";
+  ASSERT_TRUE((foo_result->Get<redis::RespBulkString>().value == "one")) << "GET foo should return the first loaded value";
 
   redis::CommandResult bar_result = executor.Execute({"GET", "bar"});
   ASSERT_TRUE((bar_result.has_value())) << "GET bar should succeed after loading RDB";
-  ASSERT_TRUE((std::holds_alternative<redis::RespBulkString>(*bar_result))) << "GET bar should return a RESP bulk string";
-  ASSERT_TRUE((std::get<redis::RespBulkString>(*bar_result).value == "two")) << "GET bar should return the second loaded value";
+  ASSERT_TRUE((bar_result->Is<redis::RespBulkString>())) << "GET bar should return a RESP bulk string";
+  ASSERT_TRUE((bar_result->Get<redis::RespBulkString>().value == "two")) << "GET bar should return the second loaded value";
 
   std::filesystem::remove(file_path);
   std::filesystem::remove(config.dir);
@@ -174,18 +174,53 @@ TEST(RdbLoaderTest, RespectsExpiredAndLiveKeys) {
                  static_cast<std::streamsize>(rdb_bytes.size()));
   }
 
-  LoadDatabaseFromRdb(config, database);
+  ASSERT_TRUE(LoadDatabaseFromRdb(config, database).has_value());
   CommandExecutor executor(database, false);
 
   redis::CommandResult expired_result = executor.Execute({"GET", "foo"});
   ASSERT_TRUE((expired_result.has_value())) << "GET foo should succeed after loading RDB";
-  ASSERT_TRUE((std::holds_alternative<redis::RespNullBulk>(*expired_result))) << "GET foo should return a null bulk string for expired data";
+  ASSERT_TRUE((expired_result->Is<redis::RespNullBulk>())) << "GET foo should return a null bulk string for expired data";
   ASSERT_TRUE((RespWriter::Write(*expired_result) == "$-1\r\n")) << "Expired keys loaded from RDB should encode as null bulk strings";
 
   redis::CommandResult live_result = executor.Execute({"GET", "bar"});
   ASSERT_TRUE((live_result.has_value())) << "GET bar should succeed after loading RDB";
-  ASSERT_TRUE((std::holds_alternative<redis::RespBulkString>(*live_result))) << "GET bar should return a RESP bulk string for live data";
-  ASSERT_TRUE((std::get<redis::RespBulkString>(*live_result).value == "new")) << "GET bar should return the non-expired RDB value";
+  ASSERT_TRUE((live_result->Is<redis::RespBulkString>())) << "GET bar should return a RESP bulk string for live data";
+  ASSERT_TRUE((live_result->Get<redis::RespBulkString>().value == "new")) << "GET bar should return the non-expired RDB value";
+
+  std::filesystem::remove(file_path);
+  std::filesystem::remove(config.dir);
+}
+
+TEST(RdbLoaderTest, RejectsMalformedInputWithoutApplyingPartialState) {
+  Database database;
+  ServerConfig config;
+
+  char directory_template[] = "/tmp/redis-rdb-invalid-testXXXXXX";
+  char* directory = mkdtemp(directory_template);
+  ASSERT_NE(directory, nullptr);
+  config.dir = directory;
+  config.dbfilename = "dump.rdb";
+  const std::filesystem::path file_path =
+      std::filesystem::path(config.dir) / config.dbfilename;
+
+  const std::vector<unsigned char> bytes = {
+      'R', 'E', 'D', 'I', 'S', '0', '0', '1', '1',
+      0x00, 0x03, 'f', 'o', 'o', 0x03, 'b', 'a', 'r',
+      0x00, 0x03, 'b', 'a', 'z', 0x08, 't', 'r',
+  };
+  {
+    std::ofstream output(file_path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+  }
+
+  const redis::Status result = LoadDatabaseFromRdb(config, database);
+
+  ASSERT_FALSE(result.has_value());
+  CommandExecutor executor(database);
+  const redis::CommandResult get = executor.Execute({"GET", "foo"});
+  ASSERT_TRUE(get.has_value());
+  EXPECT_TRUE(get->Is<redis::RespNullBulk>());
 
   std::filesystem::remove(file_path);
   std::filesystem::remove(config.dir);

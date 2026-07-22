@@ -5,9 +5,8 @@
 #include "redis-cpp/replica_manager.hpp"
 #include "redis-cpp/resp.hpp"
 #include "redis-cpp/socket.hpp"
-
-#include <unordered_map>
-#include <unordered_set>
+#include "redis-cpp/subscription_session.hpp"
+#include "redis-cpp/transaction.hpp"
 
 namespace redis {
 
@@ -18,22 +17,20 @@ class ClientSession {
                 PubSubManager* pubsub_manager = nullptr);
   ~ClientSession();
 
-  void Run();
+  Status Run();
 
  private:
-  bool SendResponse(const std::string& response);
+  Status SendResponse(const std::string& response);
 
   Socket socket_;
+  SharedConnectionWriter writer_;
   CommandExecutor& command_executor_;
   ReplicaManager* replica_manager_;
-  PubSubManager* pubsub_manager_;
   RespParser parser_;
+  Transaction transaction_;
+  SubscriptionSession subscription_;
   bool authenticated_ = true;
-  bool in_multi_ = false;
-  std::vector<std::vector<std::string>> queued_commands_;
-  std::unordered_map<std::string, uint64_t> watched_key_versions_;
-  std::unordered_set<std::string> subscribed_channels_;
-  std::unordered_set<std::string> subscribed_patterns_;
+  bool replica_registered_ = false;
 };
 
 }  // namespace redis

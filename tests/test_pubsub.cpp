@@ -1,5 +1,7 @@
 #include "test_support.hpp"
 
+#include "redis-cpp/transaction.hpp"
+
 namespace {
 
 using redis::ClientSession;
@@ -10,16 +12,153 @@ using redis::RespArray;
 using redis::RespInteger;
 using redis::RespSimpleString;
 using redis::RespWriter;
+using redis::SubscriptionSession;
+using redis::Transaction;
 
 TEST(PubSubTest, SubscribeReturnsConfirmationFrame) {
-  Database database;
-  CommandExecutor executor(database, false);
+  SubscriptionSession subscription;
 
-  redis::CommandResult result = executor.Execute({"SUBSCRIBE", "foo"});
-  ASSERT_TRUE((result.has_value())) << "SUBSCRIBE foo should succeed";
-  ASSERT_TRUE((std::holds_alternative<redis::RespRaw>(*result))) << "SUBSCRIBE foo should return a raw RESP frame";
-  ASSERT_TRUE((RespWriter::Write(*result) ==
+  auto handled = subscription.Process({"SUBSCRIBE", "foo"});
+  ASSERT_TRUE((handled.has_value())) << "SUBSCRIBE should be handled";
+  ASSERT_TRUE((handled->has_value())) << "SUBSCRIBE foo should succeed";
+  ASSERT_TRUE(((**handled).Is<redis::RespArray>())) << "SUBSCRIBE foo should return a structured RESP array";
+  ASSERT_TRUE((RespWriter::Write(**handled) ==
              "*3\r\n$9\r\nsubscribe\r\n$3\r\nfoo\r\n:1\r\n")) << "SUBSCRIBE foo should encode the expected confirmation array";
+}
+
+TEST(PubSubTest, MultipleSubscriptionsReturnAStructuredFrameSequence) {
+  SubscriptionSession subscription;
+
+  auto handled = subscription.Process({"SUBSCRIBE", "foo", "bar"});
+
+  ASSERT_TRUE((handled.has_value())) << "SUBSCRIBE should be handled";
+  ASSERT_TRUE((handled->has_value())) << "multi-channel SUBSCRIBE should succeed";
+  ASSERT_TRUE(((**handled).Is<redis::RespSequence>())) << "multiple confirmations should use a structured RESP sequence";
+  EXPECT_TRUE((RespWriter::Write(**handled) ==
+              "*3\r\n$9\r\nsubscribe\r\n$3\r\nfoo\r\n:1\r\n"
+              "*3\r\n$9\r\nsubscribe\r\n$3\r\nbar\r\n:2\r\n")) << "each subscription should produce one confirmation frame";
+}
+
+TEST(PubSubTest, SubscriptionSessionRejectsCommandsAndHandlesPing) {
+  SubscriptionSession subscription;
+  auto setup = subscription.Process({"SUBSCRIBE", "foo"});
+  ASSERT_TRUE((setup.has_value() && setup->has_value()))
+      << "setup subscription should succeed";
+
+  auto rejected = subscription.Process({"ECHO", "hello"});
+  ASSERT_TRUE((rejected.has_value() && rejected->has_value())) << "a disallowed command should produce a protocol reply";
+  EXPECT_TRUE((RespWriter::Write(**rejected) ==
+              "-ERR Can't execute 'ECHO' in subscribed mode\r\n")) << "subscribed mode should return a RESP error";
+
+  auto ping = subscription.Process({"PING", "hello"});
+  ASSERT_TRUE((ping.has_value() && ping->has_value())) << "subscribed PING should be handled";
+  EXPECT_TRUE((RespWriter::Write(**ping) ==
+              "*2\r\n$4\r\npong\r\n$5\r\nhello\r\n")) << "subscribed PING should echo its optional payload";
+}
+
+TEST(PubSubTest, ResetAndDestructionRemoveManagerSubscriptions) {
+  PubSubManager pubsub_manager;
+  int sockets[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
+  auto writer = std::make_shared<redis::ConnectionWriter>(sockets[0]);
+
+  {
+    SubscriptionSession subscription(writer, &pubsub_manager);
+    auto setup = subscription.Process({"SUBSCRIBE", "foo"});
+    ASSERT_TRUE((setup.has_value() && setup->has_value()))
+        << "setup subscription should succeed";
+    EXPECT_TRUE((pubsub_manager.SubscriberCount("foo") == 1)) << "manager should track the subscription";
+
+    auto reset = subscription.Process({"RESET"});
+    ASSERT_TRUE((reset.has_value() && reset->has_value())) << "RESET should succeed";
+    EXPECT_TRUE((RespWriter::Write(**reset) == "+RESET\r\n")) << "RESET should return its simple string reply";
+    EXPECT_TRUE((!subscription.IsSubscribed())) << "RESET should leave subscribed mode";
+    EXPECT_TRUE((pubsub_manager.SubscriberCount("foo") == 0)) << "RESET should unregister manager subscriptions";
+
+    auto second_setup = subscription.Process({"SUBSCRIBE", "bar"});
+    ASSERT_TRUE((second_setup.has_value() && second_setup->has_value()))
+        << "a second setup subscription should succeed";
+  }
+
+  EXPECT_TRUE((pubsub_manager.SubscriberCount("bar") == 0)) << "destruction should unregister remaining subscriptions";
+  writer->Close();
+  close(sockets[0]);
+  close(sockets[1]);
+}
+
+TEST(PubSubTest, UnsubscribeAllUsesAFrameSequenceAndLeavesSubscribedMode) {
+  SubscriptionSession subscription;
+  auto setup = subscription.Process({"SUBSCRIBE", "foo", "bar"});
+  ASSERT_TRUE((setup.has_value() && setup->has_value()))
+      << "setup subscriptions should succeed";
+
+  auto handled = subscription.Process({"UNSUBSCRIBE"});
+
+  ASSERT_TRUE((handled.has_value() && handled->has_value())) << "UNSUBSCRIBE should succeed";
+  ASSERT_TRUE(((**handled).Is<redis::RespSequence>())) << "multiple unsubscribe confirmations should use a RESP sequence";
+  EXPECT_TRUE((RespWriter::Write(**handled) ==
+              "*3\r\n$11\r\nunsubscribe\r\n$3\r\nbar\r\n:1\r\n"
+              "*3\r\n$11\r\nunsubscribe\r\n$3\r\nfoo\r\n:0\r\n")) << "unsubscribe confirmations should report the remaining count";
+  EXPECT_TRUE((!subscription.IsSubscribed())) << "UNSUBSCRIBE should leave subscribed mode after the final channel";
+}
+
+TEST(PubSubTest, CommandExecutorPublishesDirectlyAndInsideTransactions) {
+  Database database;
+  PubSubManager pubsub_manager;
+  CommandExecutor executor(database, false, nullptr, nullptr, nullptr,
+                           &pubsub_manager);
+  int subscriber_sockets[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, subscriber_sockets), 0);
+  auto writer =
+      std::make_shared<redis::ConnectionWriter>(subscriber_sockets[0]);
+  pubsub_manager.Subscribe(writer, "events");
+
+  const auto direct = executor.Execute({"PUBLISH", "events", "direct"});
+  ASSERT_TRUE(direct.has_value());
+  ASSERT_TRUE(direct->Is<RespInteger>());
+  EXPECT_EQ(direct->Get<RespInteger>().value, 1);
+
+  char buffer[256];
+  ssize_t received =
+      recv(subscriber_sockets[1], buffer, sizeof(buffer), 0);
+  ASSERT_GT(received, 0);
+  EXPECT_EQ(std::string(buffer, buffer + received),
+            "*3\r\n$7\r\nmessage\r\n$6\r\nevents\r\n$6\r\ndirect\r\n");
+
+  Transaction transaction(executor);
+  ASSERT_TRUE(transaction.Process({"MULTI"})->has_value());
+  ASSERT_TRUE(
+      transaction.Process({"PUBLISH", "events", "transaction"})->has_value());
+  const auto exec = transaction.Process({"EXEC"});
+  ASSERT_TRUE(exec.has_value());
+  ASSERT_TRUE(exec->has_value());
+  ASSERT_TRUE(exec->value().Is<RespArray>());
+  const auto& replies = exec->value().Get<RespArray>().values;
+  ASSERT_EQ(replies.size(), 1U);
+  ASSERT_TRUE(replies[0].Is<RespInteger>());
+  EXPECT_EQ(replies[0].Get<RespInteger>().value, 1);
+
+  received = recv(subscriber_sockets[1], buffer, sizeof(buffer), 0);
+  ASSERT_GT(received, 0);
+  EXPECT_EQ(
+      std::string(buffer, buffer + received),
+      "*3\r\n$7\r\nmessage\r\n$6\r\nevents\r\n$11\r\ntransaction\r\n");
+
+  pubsub_manager.Unsubscribe(writer->Id(), "events");
+  writer->Close();
+  close(subscriber_sockets[0]);
+  close(subscriber_sockets[1]);
+}
+
+TEST(PubSubTest, PublishRejectsWrongArity) {
+  Database database;
+  CommandExecutor executor(database);
+
+  const auto missing_message = executor.Execute({"PUBLISH", "events"});
+
+  ASSERT_FALSE(missing_message.has_value());
+  EXPECT_EQ(missing_message.error().code,
+            redis::CommandErrorCode::kWrongArity);
 }
 
 TEST(PubSubTest, SubscribeTracksChannelsPerClientSession) {
@@ -33,7 +172,7 @@ TEST(PubSubTest, SubscribeTracksChannelsPerClientSession) {
 
     ClientSession session(redis::Socket(redis::UniqueFd(fds[0])), executor,
                           nullptr);
-    std::thread session_thread([&]() { session.Run(); });
+    std::thread session_thread([&]() { (void)session.Run(); });
 
     std::vector<std::string> responses;
     char buffer[256];
@@ -82,7 +221,7 @@ TEST(PubSubTest, SubscribedModeRejectsDisallowedCommands) {
 
   ClientSession session(redis::Socket(redis::UniqueFd(fds[0])), executor,
                         nullptr);
-  std::thread session_thread([&]() { session.Run(); });
+  std::thread session_thread([&]() { (void)session.Run(); });
 
   char buffer[256];
 
@@ -125,7 +264,7 @@ TEST(PubSubTest, SubscribedModePingUsesPubsubResponse) {
 
     ClientSession session(redis::Socket(redis::UniqueFd(fds[0])), executor,
                           nullptr);
-    std::thread session_thread([&]() { session.Run(); });
+    std::thread session_thread([&]() { (void)session.Run(); });
 
     std::vector<std::string> responses;
     char buffer[256];
@@ -158,8 +297,9 @@ TEST(PubSubTest, SubscribedModePingUsesPubsubResponse) {
 
 TEST(PubSubTest, PublishReturnsSubscribedClientCount) {
   Database database;
-  CommandExecutor executor(database, false);
   PubSubManager pubsub_manager;
+  CommandExecutor executor(database, false, nullptr, nullptr, nullptr,
+                           &pubsub_manager);
 
   auto start_client = [&](const std::vector<std::string>& initial_commands) {
     int fds[2];
@@ -169,7 +309,8 @@ TEST(PubSubTest, PublishReturnsSubscribedClientCount) {
     auto session = std::make_unique<ClientSession>(
         redis::Socket(redis::UniqueFd(fds[0])), executor, nullptr,
         &pubsub_manager);
-    std::thread session_thread([session = session.get()]() { session->Run(); });
+    std::thread session_thread(
+        [session = session.get()]() { (void)session->Run(); });
 
     char buffer[256];
     for (const std::string& command : initial_commands) {
@@ -253,8 +394,9 @@ TEST(PubSubTest, PublishReturnsSubscribedClientCount) {
 
 TEST(PubSubTest, UnsubscribeRemovesChannelAndStopsDelivery) {
   Database database;
-  CommandExecutor executor(database, false);
   PubSubManager pubsub_manager;
+  CommandExecutor executor(database, false, nullptr, nullptr, nullptr,
+                           &pubsub_manager);
 
   auto start_client = [&](const std::vector<std::string>& initial_commands) {
     int fds[2];
@@ -264,7 +406,8 @@ TEST(PubSubTest, UnsubscribeRemovesChannelAndStopsDelivery) {
     auto session = std::make_unique<ClientSession>(
         redis::Socket(redis::UniqueFd(fds[0])), executor, nullptr,
         &pubsub_manager);
-    std::thread session_thread([session = session.get()]() { session->Run(); });
+    std::thread session_thread(
+        [session = session.get()]() { (void)session->Run(); });
 
     char buffer[256];
     for (const std::string& command : initial_commands) {

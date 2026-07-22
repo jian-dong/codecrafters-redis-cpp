@@ -23,8 +23,8 @@ TEST(AuthTest, ValidatesPasswordAgainstAclHashes) {
 
   result = executor.Execute({"AUTH", "default", "mypassword"});
   ASSERT_TRUE((result.has_value())) << "AUTH with the correct password should succeed";
-  ASSERT_TRUE((std::holds_alternative<RespSimpleString>(*result))) << "AUTH with the correct password should return a RESP simple string";
-  ASSERT_TRUE((std::get<RespSimpleString>(*result).value == "OK")) << "AUTH with the correct password should return OK";
+  ASSERT_TRUE(((*result).Is<RespSimpleString>())) << "AUTH with the correct password should return a RESP simple string";
+  ASSERT_TRUE(((*result).Get<RespSimpleString>().value == "OK")) << "AUTH with the correct password should return OK";
   ASSERT_TRUE((RespWriter::Write(*result) == "+OK\r\n")) << "AUTH with the correct password should encode OK as a RESP simple string";
 }
 
@@ -36,7 +36,7 @@ TEST(AuthTest, NewConnectionsRequireAuthAfterDefaultPasswordIsSet) {
   ASSERT_TRUE((socketpair(AF_UNIX, SOCK_STREAM, 0, authenticated_fds) == 0)) << "authenticated socketpair should succeed";
   ClientSession authenticated_session(
       redis::Socket(redis::UniqueFd(authenticated_fds[0])), executor, nullptr);
-  std::thread authenticated_thread([&]() { authenticated_session.Run(); });
+  std::thread authenticated_thread([&]() { (void)authenticated_session.Run(); });
 
   char buffer[512];
   const std::string setuser_command =
@@ -58,7 +58,7 @@ TEST(AuthTest, NewConnectionsRequireAuthAfterDefaultPasswordIsSet) {
   ASSERT_TRUE((socketpair(AF_UNIX, SOCK_STREAM, 0, unauthenticated_fds) == 0)) << "unauthenticated socketpair should succeed";
   ClientSession unauthenticated_session(
       redis::Socket(redis::UniqueFd(unauthenticated_fds[0])), executor, nullptr);
-  std::thread unauthenticated_thread([&]() { unauthenticated_session.Run(); });
+  std::thread unauthenticated_thread([&]() { (void)unauthenticated_session.Run(); });
 
   ASSERT_TRUE((send(unauthenticated_fds[1], whoami_command.data(), whoami_command.size(), 0) ==
              static_cast<ssize_t>(whoami_command.size()))) << "ACL WHOAMI should be written fully on the unauthenticated connection";
@@ -80,7 +80,7 @@ TEST(AuthTest, AuthenticatesConnectionForSubsequentCommands) {
   ASSERT_TRUE((socketpair(AF_UNIX, SOCK_STREAM, 0, authenticated_fds) == 0)) << "authenticated socketpair should succeed";
   ClientSession authenticated_session(
       redis::Socket(redis::UniqueFd(authenticated_fds[0])), executor, nullptr);
-  std::thread authenticated_thread([&]() { authenticated_session.Run(); });
+  std::thread authenticated_thread([&]() { (void)authenticated_session.Run(); });
 
   char buffer[512];
   const std::string setuser_command =
@@ -95,7 +95,7 @@ TEST(AuthTest, AuthenticatesConnectionForSubsequentCommands) {
   ASSERT_TRUE((socketpair(AF_UNIX, SOCK_STREAM, 0, unauthenticated_fds) == 0)) << "unauthenticated socketpair should succeed";
   ClientSession unauthenticated_session(
       redis::Socket(redis::UniqueFd(unauthenticated_fds[0])), executor, nullptr);
-  std::thread unauthenticated_thread([&]() { unauthenticated_session.Run(); });
+  std::thread unauthenticated_thread([&]() { (void)unauthenticated_session.Run(); });
 
   const std::string ping_command = "*1\r\n$4\r\nPING\r\n";
   ASSERT_TRUE((send(unauthenticated_fds[1], ping_command.data(), ping_command.size(), 0) ==

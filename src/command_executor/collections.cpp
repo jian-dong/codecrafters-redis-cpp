@@ -1,53 +1,68 @@
 #include "redis-cpp/command_executor.hpp"
 
-#include <cerrno>
 #include <chrono>
-#include <cstdlib>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "redis-cpp/numeric_parser.hpp"
+
 namespace redis {
 namespace {
 
-bool ParseDouble(std::string_view data, double& value) {
-  if (data.empty()) {
-    return false;
-  }
+std::chrono::steady_clock::duration SaturatingMilliseconds(
+    int64_t milliseconds) {
+  using Duration = std::chrono::steady_clock::duration;
 
-  errno = 0;
-  char* parse_end = nullptr;
-  const std::string text(data);
-  value = std::strtod(text.c_str(), &parse_end);
-  return parse_end == text.c_str() + text.size() && errno != ERANGE;
+  const auto maximum_milliseconds =
+      std::chrono::duration_cast<std::chrono::milliseconds>(Duration::max());
+  const auto parsed = std::chrono::milliseconds(milliseconds);
+  if (parsed > maximum_milliseconds) {
+    return Duration::max();
+  }
+  return std::chrono::duration_cast<Duration>(parsed);
 }
 
-std::string EncodeStreamRange(
+std::chrono::steady_clock::time_point SaturatingDeadline(
+    std::chrono::steady_clock::duration timeout) {
+  using Clock = std::chrono::steady_clock;
+
+  const Clock::time_point now = Clock::now();
+  if (timeout > Clock::time_point::max() - now) {
+    return Clock::time_point::max();
+  }
+  return now + timeout;
+}
+
+RespArray StreamRangeResponse(
     const std::vector<Database::StreamRangeEntry>& entries) {
-  std::string encoded = "*" + std::to_string(entries.size()) + "\r\n";
+  std::vector<RespValue> response;
+  response.reserve(entries.size());
   for (const Database::StreamRangeEntry& entry : entries) {
-    encoded += "*2\r\n";
-    encoded += RespWriter::Write(RespBulkString{entry.id});
-    encoded += "*" + std::to_string(entry.values.size()) + "\r\n";
-    for (const std::string& value : entry.values) {
-      encoded += RespWriter::Write(RespBulkString{value});
+    std::vector<std::string> fields;
+    fields.reserve(entry.fields.size() * 2);
+    for (const auto& [field, value] : entry.fields) {
+      fields.push_back(field);
+      fields.push_back(value);
     }
+    response.emplace_back(RespArray{std::vector<RespValue>{
+        RespBulkString{entry.id}, RespArray::BulkStrings(fields)}});
   }
-  return encoded;
+  return RespArray{std::move(response)};
 }
 
-std::string EncodeXreadResponse(
+RespArray XreadResponse(
     const std::vector<std::pair<std::string, std::vector<Database::StreamRangeEntry>>>&
         streams) {
-  std::string encoded = "*" + std::to_string(streams.size()) + "\r\n";
+  std::vector<RespValue> response;
+  response.reserve(streams.size());
   for (const auto& [key, entries] : streams) {
-    encoded += "*2\r\n";
-    encoded += RespWriter::Write(RespBulkString{key});
-    encoded += EncodeStreamRange(entries);
+    response.emplace_back(RespArray{std::vector<RespValue>{
+        RespBulkString{key}, StreamRangeResponse(entries)}});
   }
-  return encoded;
+  return RespArray{std::move(response)};
 }
 
 }  // namespace
@@ -58,20 +73,19 @@ CommandResult CommandExecutor::HandleZadd(const std::vector<std::string>& args) 
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "zadd"});
   }
 
-  double score = 0.0;
-  if (!ParseDouble(args[2], score)) {
+  const std::optional<double> score = ParseFiniteDouble(args[2]);
+  if (!score.has_value()) {
     return tl::make_unexpected(CommandError{
         .code = CommandErrorCode::kSyntaxError, .command = "zadd"});
   }
 
-  const Database::ZAddResult result =
-      database_.ZAdd(args[1], score, args[2], args[3]);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "zadd"});
+  const DatabaseResult<int64_t> result =
+      database_.ZAdd(args[1], *score, args[2], args[3]);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "zadd"));
   }
 
-  return RespInteger{result.added};
+  return RespInteger{*result};
 }
 
 CommandResult CommandExecutor::HandleZrank(
@@ -81,16 +95,16 @@ CommandResult CommandExecutor::HandleZrank(
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "zrank"});
   }
 
-  const Database::ZRankResult result = database_.ZRank(args[1], args[2]);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "zrank"});
+  const DatabaseResult<std::optional<int64_t>> result =
+      database_.ZRank(args[1], args[2]);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "zrank"));
   }
-  if (!result.found) {
+  if (!result->has_value()) {
     return RespNullBulk{};
   }
 
-  return RespInteger{result.rank};
+  return RespInteger{**result};
 }
 
 CommandResult CommandExecutor::HandleZrange(
@@ -100,20 +114,19 @@ CommandResult CommandExecutor::HandleZrange(
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "zrange"});
   }
 
-  int64_t start = 0;
-  int64_t stop = 0;
-  if (!ParseSignedInteger(args[2], start) ||
-      !ParseSignedInteger(args[3], stop)) {
+  const std::optional<int64_t> start = ParseSignedInteger(args[2]);
+  const std::optional<int64_t> stop = ParseSignedInteger(args[3]);
+  if (!start.has_value() || !stop.has_value()) {
     return RespArray{};
   }
 
-  const Database::ZRangeResult result = database_.ZRange(args[1], start, stop);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "zrange"});
+  const DatabaseResult<std::vector<std::string>> result =
+      database_.ZRange(args[1], *start, *stop);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "zrange"));
   }
 
-  return RespArray{result.members};
+  return RespArray::BulkStrings(*result);
 }
 
 CommandResult CommandExecutor::HandleZcard(
@@ -123,13 +136,12 @@ CommandResult CommandExecutor::HandleZcard(
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "zcard"});
   }
 
-  const Database::ZCardResult result = database_.ZCard(args[1]);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "zcard"});
+  const DatabaseResult<int64_t> result = database_.ZCard(args[1]);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "zcard"));
   }
 
-  return RespInteger{result.cardinality};
+  return RespInteger{*result};
 }
 
 CommandResult CommandExecutor::HandleZscore(
@@ -139,16 +151,16 @@ CommandResult CommandExecutor::HandleZscore(
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "zscore"});
   }
 
-  const Database::ZScoreResult result = database_.ZScore(args[1], args[2]);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "zscore"});
+  const DatabaseResult<std::optional<std::string>> result =
+      database_.ZScore(args[1], args[2]);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "zscore"));
   }
-  if (!result.found) {
+  if (!result->has_value()) {
     return RespNullBulk{};
   }
 
-  return RespBulkString{result.score};
+  return RespBulkString{**result};
 }
 
 CommandResult CommandExecutor::HandleZrem(const std::vector<std::string>& args) {
@@ -157,13 +169,12 @@ CommandResult CommandExecutor::HandleZrem(const std::vector<std::string>& args) 
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "zrem"});
   }
 
-  const Database::ZRemResult result = database_.ZRem(args[1], args[2]);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "zrem"});
+  const DatabaseResult<int64_t> result = database_.ZRem(args[1], args[2]);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "zrem"));
   }
 
-  return RespInteger{result.removed};
+  return RespInteger{*result};
 }
 
 CommandResult CommandExecutor::HandleXadd(const std::vector<std::string>& args) {
@@ -178,29 +189,13 @@ CommandResult CommandExecutor::HandleXadd(const std::vector<std::string>& args) 
     fields.emplace_back(args[index], args[index + 1]);
   }
 
-  const Database::StreamAddResult result =
+  const DatabaseResult<std::string> result =
       database_.XAdd(args[1], args[2], fields);
-  switch (result.status) {
-    case Database::StreamAddResult::Status::kOk:
-      return RespBulkString{result.id};
-    case Database::StreamAddResult::Status::kWrongType:
-      return tl::make_unexpected(
-          CommandError{.code = CommandErrorCode::kWrongType, .command = "xadd"});
-    case Database::StreamAddResult::Status::kIdNotGreaterThanZeroZero:
-      return tl::make_unexpected(CommandError{
-          .code = CommandErrorCode::kXaddIdNotGreaterThanZeroZero,
-          .command = "xadd"});
-    case Database::StreamAddResult::Status::kIdNotGreaterThanTopItem:
-      return tl::make_unexpected(CommandError{
-          .code = CommandErrorCode::kXaddIdNotGreaterThanTopItem,
-          .command = "xadd"});
-    case Database::StreamAddResult::Status::kInvalidId:
-      return tl::make_unexpected(
-          CommandError{.code = CommandErrorCode::kSyntaxError, .command = "xadd"});
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "xadd"));
   }
 
-  return tl::make_unexpected(
-      CommandError{.code = CommandErrorCode::kSyntaxError, .command = "xadd"});
+  return RespBulkString{*result};
 }
 
 CommandResult CommandExecutor::HandleXrange(
@@ -210,18 +205,13 @@ CommandResult CommandExecutor::HandleXrange(
         .code = CommandErrorCode::kWrongArity, .command = "xrange"});
   }
 
-  const Database::StreamRangeResult result =
+  const DatabaseResult<std::vector<Database::StreamRangeEntry>> result =
       database_.XRange(args[1], args[2], args[3]);
-  if (result.wrong_type) {
-    return tl::make_unexpected(CommandError{
-        .code = CommandErrorCode::kWrongType, .command = "xrange"});
-  }
-  if (result.invalid_id) {
-    return tl::make_unexpected(CommandError{
-        .code = CommandErrorCode::kSyntaxError, .command = "xrange"});
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "xrange"));
   }
 
-  return RespRaw{EncodeStreamRange(result.entries)};
+  return StreamRangeResponse(*result);
 }
 
 CommandResult CommandExecutor::HandleXread(
@@ -239,13 +229,14 @@ CommandResult CommandExecutor::HandleXread(
           .code = CommandErrorCode::kWrongArity, .command = "xread"});
     }
 
-    int64_t timeout_milliseconds = 0;
-    if (!ParseMilliseconds(args[streams_index + 1], timeout_milliseconds)) {
+    const std::optional<int64_t> timeout_milliseconds =
+        ParseNonNegativeInteger(args[streams_index + 1]);
+    if (!timeout_milliseconds.has_value()) {
       return tl::make_unexpected(CommandError{
           .code = CommandErrorCode::kInvalidInteger, .command = "xread"});
     }
 
-    block_timeout = std::chrono::milliseconds(timeout_milliseconds);
+    block_timeout = SaturatingMilliseconds(*timeout_milliseconds);
     streams_index += 2;
   }
 
@@ -266,48 +257,78 @@ CommandResult CommandExecutor::HandleXread(
   }
 
   if (block_timeout.has_value()) {
-    const Database::BlockingStreamReadResult result =
-        database_.BlockingXRead(stream_specs, *block_timeout);
-    if (result.wrong_type) {
-      return tl::make_unexpected(CommandError{
-          .code = CommandErrorCode::kWrongType, .command = "xread"});
+    std::lock_guard<std::recursive_mutex> execution_lock(transaction_mutex_);
+    for (auto& [key, start] : stream_specs) {
+      if (start != "$") {
+        continue;
+      }
+      const DatabaseResult<std::optional<std::string>> cursor =
+          database_.LastStreamId(key);
+      if (!cursor) {
+        return tl::make_unexpected(
+            MapDatabaseError(cursor.error(), "xread"));
+      }
+      start = cursor->value_or("0-0");
     }
-    if (result.invalid_id) {
-      return tl::make_unexpected(CommandError{
-          .code = CommandErrorCode::kSyntaxError, .command = "xread"});
+  }
+
+  auto read_streams = [&]() -> CommandResult {
+    std::vector<
+        std::pair<std::string, std::vector<Database::StreamRangeEntry>>>
+        streams;
+    streams.reserve(stream_count);
+
+    for (size_t index = 0; index < stream_count; ++index) {
+      const DatabaseResult<std::vector<Database::StreamRangeEntry>> result =
+          database_.XRead(stream_specs[index].first,
+                          stream_specs[index].second);
+      if (!result) {
+        return tl::make_unexpected(
+            MapDatabaseError(result.error(), "xread"));
+      }
+      if (!result->empty()) {
+        streams.emplace_back(stream_specs[index].first, *result);
+      }
     }
-    if (result.streams.empty()) {
+
+    if (streams.empty()) {
       return RespNullArray{};
     }
+    return XreadResponse(streams);
+  };
 
-    return RespRaw{EncodeXreadResponse(result.streams)};
+  if (!block_timeout.has_value()) {
+    return read_streams();
   }
 
-  std::vector<std::pair<std::string, std::vector<Database::StreamRangeEntry>>>
-      streams;
-  streams.reserve(stream_count);
+  const bool wait_forever =
+      *block_timeout == std::chrono::steady_clock::duration::zero();
+  const auto deadline = SaturatingDeadline(*block_timeout);
+  while (true) {
+    uint64_t observed_generation = 0;
+    {
+      std::lock_guard<std::recursive_mutex> execution_lock(
+          transaction_mutex_);
+      CommandResult result = read_streams();
+      if (!result || !result->Is<RespNullArray>()) {
+        return result;
+      }
+      observed_generation = database_.StreamGeneration();
+    }
 
-  for (size_t index = 0; index < stream_count; ++index) {
-    const Database::StreamRangeResult result =
-        database_.XRead(stream_specs[index].first, stream_specs[index].second);
-    if (result.wrong_type) {
-      return tl::make_unexpected(CommandError{
-          .code = CommandErrorCode::kWrongType, .command = "xread"});
+    std::chrono::steady_clock::duration remaining{};
+    if (!wait_forever) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        return RespNullArray{};
+      }
+      remaining = deadline - now;
     }
-    if (result.invalid_id) {
-      return tl::make_unexpected(CommandError{
-          .code = CommandErrorCode::kSyntaxError, .command = "xread"});
-    }
-    if (!result.entries.empty()) {
-      streams.emplace_back(stream_specs[index].first, result.entries);
+    if (database_.WaitForStreamChange(observed_generation, remaining) ==
+        WaitOutcome::kTimedOut) {
+      return RespNullArray{};
     }
   }
-
-  if (streams.empty()) {
-    return RespNullArray{};
-  }
-
-  return RespRaw{EncodeXreadResponse(streams)};
 }
 
 CommandResult CommandExecutor::HandleRpush(
@@ -318,14 +339,13 @@ CommandResult CommandExecutor::HandleRpush(
   }
 
   const std::vector<std::string> values(args.begin() + 2, args.end());
-  const Database::ListMutationResult result =
+  const DatabaseResult<int64_t> result =
       database_.PushRight(args[1], values);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "rpush"});
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "rpush"));
   }
 
-  return RespInteger{result.size};
+  return RespInteger{*result};
 }
 
 CommandResult CommandExecutor::HandleLpush(
@@ -336,14 +356,13 @@ CommandResult CommandExecutor::HandleLpush(
   }
 
   const std::vector<std::string> values(args.begin() + 2, args.end());
-  const Database::ListMutationResult result =
+  const DatabaseResult<int64_t> result =
       database_.PushLeft(args[1], values);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "lpush"});
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "lpush"));
   }
 
-  return RespInteger{result.size};
+  return RespInteger{*result};
 }
 
 CommandResult CommandExecutor::HandleLrange(
@@ -353,21 +372,19 @@ CommandResult CommandExecutor::HandleLrange(
         .code = CommandErrorCode::kWrongArity, .command = "lrange"});
   }
 
-  int64_t start = 0;
-  int64_t stop = 0;
-  if (!ParseSignedInteger(args[2], start) ||
-      !ParseSignedInteger(args[3], stop)) {
+  const std::optional<int64_t> start = ParseSignedInteger(args[2]);
+  const std::optional<int64_t> stop = ParseSignedInteger(args[3]);
+  if (!start.has_value() || !stop.has_value()) {
     return RespArray{};
   }
 
-  const Database::ListRangeResult result =
-      database_.Range(args[1], start, stop);
-  if (result.wrong_type) {
-    return tl::make_unexpected(CommandError{
-        .code = CommandErrorCode::kWrongType, .command = "lrange"});
+  const DatabaseResult<std::vector<std::string>> result =
+      database_.Range(args[1], *start, *stop);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "lrange"));
   }
 
-  return RespArray{result.values};
+  return RespArray::BulkStrings(*result);
 }
 
 CommandResult CommandExecutor::HandleLlen(const std::vector<std::string>& args) {
@@ -376,13 +393,12 @@ CommandResult CommandExecutor::HandleLlen(const std::vector<std::string>& args) 
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "llen"});
   }
 
-  const Database::ListLengthResult result = database_.Length(args[1]);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "llen"});
+  const DatabaseResult<int64_t> result = database_.Length(args[1]);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "llen"));
   }
 
-  return RespInteger{result.length};
+  return RespInteger{*result};
 }
 
 CommandResult CommandExecutor::HandleLpop(const std::vector<std::string>& args) {
@@ -392,56 +408,95 @@ CommandResult CommandExecutor::HandleLpop(const std::vector<std::string>& args) 
   }
 
   if (args.size() >= 3) {
-    int64_t count = 0;
-    if (!ParseSignedInteger(args[2], count) || count <= 0) {
+    const std::optional<int64_t> count = ParseSignedInteger(args[2]);
+    if (!count.has_value() || *count <= 0) {
       return RespArray{};
     }
 
-    const Database::ListPopManyResult result =
-        database_.PopLeft(args[1], static_cast<size_t>(count));
-    if (result.wrong_type) {
-      return tl::make_unexpected(CommandError{
-          .code = CommandErrorCode::kWrongType, .command = "lpop"});
+    const DatabaseResult<std::vector<std::string>> result =
+        database_.PopLeft(args[1], static_cast<size_t>(*count));
+    if (!result) {
+      return tl::make_unexpected(MapDatabaseError(result.error(), "lpop"));
     }
 
-    return RespArray{result.values};
+    return RespArray::BulkStrings(*result);
   }
 
-  const Database::ListPopResult result = database_.PopLeft(args[1]);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "lpop"});
+  const DatabaseResult<std::optional<std::string>> result =
+      database_.PopLeft(args[1]);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "lpop"));
   }
-  if (!result.found) {
+  if (!result->has_value()) {
     return RespNullBulk{};
   }
 
-  return RespBulkString{result.value};
+  return RespBulkString{**result};
 }
 
-CommandResult CommandExecutor::HandleBlpop(
+CommandResult CommandExecutor::ExecuteBlockingPop(
+    const std::vector<std::string>& args, CommandOrigin origin) {
+  if (args.size() < 3) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "blpop"});
+  }
+
+  const std::optional<std::chrono::steady_clock::duration> timeout =
+      ParseNonNegativeTimeout(args[2]);
+  if (!timeout.has_value()) {
+    return RespNullArray{};
+  }
+
+  const bool wait_forever =
+      *timeout == std::chrono::steady_clock::duration::zero();
+  const auto deadline = SaturatingDeadline(*timeout);
+  while (true) {
+    {
+      std::lock_guard<std::recursive_mutex> execution_lock(
+          transaction_mutex_);
+      CommandResult result = HandleBlpopWithoutBlocking(args);
+      if (!result || !result->Is<RespNullArray>()) {
+        return FinishCommand(args, DescribeCommand(args[0]),
+                             std::move(result), origin);
+      }
+    }
+
+    std::chrono::steady_clock::duration remaining{};
+    if (!wait_forever) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        return RespNullArray{};
+      }
+      remaining = deadline - now;
+    }
+    if (database_.WaitForListReady(args[1], remaining) ==
+        WaitOutcome::kTimedOut) {
+      return RespNullArray{};
+    }
+  }
+}
+
+CommandResult CommandExecutor::HandleBlpopWithoutBlocking(
     const std::vector<std::string>& args) {
   if (args.size() < 3) {
     return tl::make_unexpected(CommandError{
         .code = CommandErrorCode::kWrongArity, .command = "blpop"});
   }
 
-  std::chrono::steady_clock::duration timeout{};
-  if (!ParseTimeoutDuration(args[2], timeout)) {
+  if (!ParseNonNegativeTimeout(args[2]).has_value()) {
     return RespNullArray{};
   }
 
-  const Database::BlockingPopResult result =
-      database_.BlockingPopLeft(args[1], timeout);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "blpop"});
+  const DatabaseResult<std::optional<std::string>> result =
+      database_.PopLeft(args[1]);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "blpop"));
   }
-  if (!result.found) {
+  if (!result->has_value()) {
     return RespNullArray{};
   }
 
-  return RespArray{{result.key, result.value}};
+  return RespArray::BulkStrings({args[1], **result});
 }
 
 }  // namespace redis

@@ -12,10 +12,11 @@
 #include <variant>
 #include <vector>
 
+#include "tl/expected.hpp"
+
 namespace redis {
 
 enum class ValueType {
-  kNone,
   kString,
   kList,
   kStream,
@@ -24,157 +25,83 @@ enum class ValueType {
 
 std::string ValueTypeName(ValueType type);
 
+enum class DatabaseErrorCode {
+  kWrongType,
+  kInvalidInteger,
+  kIntegerOverflow,
+  kInvalidStreamId,
+  kStreamIdNotGreaterThanZeroZero,
+  kStreamIdNotGreaterThanTopItem,
+};
+
+struct DatabaseError {
+  DatabaseErrorCode code = DatabaseErrorCode::kWrongType;
+  std::optional<ValueType> actual_type;
+};
+
+template <typename T> using DatabaseResult = tl::expected<T, DatabaseError>;
+
+enum class WaitOutcome {
+  kReady,
+  kTimedOut,
+};
+
 class Database {
- public:
-  struct StringLookup {
-    ValueType type = ValueType::kNone;
-    std::optional<std::string> value;
-  };
-
-  struct ListMutationResult {
-    bool wrong_type = false;
-    int64_t size = 0;
-  };
-
-  struct ListRangeResult {
-    bool wrong_type = false;
-    std::vector<std::string> values;
-  };
-
-  struct ListLengthResult {
-    bool wrong_type = false;
-    int64_t length = 0;
-  };
-
-  struct ListPopResult {
-    bool wrong_type = false;
-    bool found = false;
-    std::string value;
-  };
-
-  struct ListPopManyResult {
-    bool wrong_type = false;
-    std::vector<std::string> values;
-  };
-
-  struct BlockingPopResult {
-    bool wrong_type = false;
-    bool found = false;
-    std::string key;
-    std::string value;
-  };
-
-  struct StreamAddResult {
-    enum class Status {
-      kOk,
-      kWrongType,
-      kIdNotGreaterThanZeroZero,
-      kIdNotGreaterThanTopItem,
-      kInvalidId,
-    };
-
-    Status status = Status::kOk;
-    std::string id;
-  };
-
+public:
   struct StreamRangeEntry {
     std::string id;
-    std::vector<std::string> values;
+    std::vector<std::pair<std::string, std::string>> fields;
   };
 
-  struct StreamRangeResult {
-    bool wrong_type = false;
-    bool invalid_id = false;
-    std::vector<StreamRangeEntry> entries;
-  };
-
-  struct BlockingStreamReadResult {
-    bool wrong_type = false;
-    bool invalid_id = false;
-    std::vector<std::pair<std::string, std::vector<StreamRangeEntry>>> streams;
-  };
-
-  struct IncrResult {
-    bool wrong_type = false;
-    bool not_integer = false;
-    int64_t value = 0;
-  };
-
-  struct ZAddResult {
-    bool wrong_type = false;
-    int64_t added = 0;
-  };
-
-  struct ZRankResult {
-    bool wrong_type = false;
-    bool found = false;
-    int64_t rank = 0;
-  };
-
-  struct ZRangeResult {
-    bool wrong_type = false;
-    std::vector<std::string> members;
-  };
-
-  struct ZCardResult {
-    bool wrong_type = false;
-    int64_t cardinality = 0;
-  };
-
-  struct ZScoreResult {
-    bool wrong_type = false;
-    bool found = false;
-    std::string score;
-  };
-
-  struct ZRemResult {
-    bool wrong_type = false;
-    int64_t removed = 0;
-  };
-
-  struct ZEntriesResult {
-    bool wrong_type = false;
-    std::vector<std::pair<std::string, std::string>> entries;
-  };
-
-  void SetString(const std::string& key, std::string value,
+  void SetString(const std::string &key, std::string value,
                  std::optional<std::chrono::milliseconds> ttl = std::nullopt);
 
-  StringLookup GetString(const std::string& key);
+  DatabaseResult<std::optional<std::string>> GetString(const std::string &key);
   std::vector<std::string> Keys();
-  ValueType TypeOf(const std::string& key);
+  std::optional<ValueType> TypeOf(const std::string &key);
 
-  ListMutationResult PushRight(const std::string& key,
-                               const std::vector<std::string>& values);
-  ListMutationResult PushLeft(const std::string& key,
-                              const std::vector<std::string>& values);
-  ListRangeResult Range(const std::string& key, int64_t start, int64_t stop);
-  ListLengthResult Length(const std::string& key);
-  ListPopResult PopLeft(const std::string& key);
-  ListPopManyResult PopLeft(const std::string& key, size_t count);
-  BlockingPopResult BlockingPopLeft(
-      const std::string& key, std::chrono::steady_clock::duration timeout);
-  StreamAddResult XAdd(
-      const std::string& key, std::string id,
-      const std::vector<std::pair<std::string, std::string>>& fields);
-  StreamRangeResult XRange(const std::string& key, std::string_view start,
-                           std::string_view end);
-  StreamRangeResult XRead(const std::string& key, std::string_view start);
-  BlockingStreamReadResult BlockingXRead(
-      const std::vector<std::pair<std::string, std::string>>& streams,
-      std::chrono::steady_clock::duration timeout);
-  IncrResult Incr(const std::string& key);
-  ZAddResult ZAdd(const std::string& key, double score,
-                  const std::string& score_text, const std::string& member);
-  ZRankResult ZRank(const std::string& key, const std::string& member);
-  ZRangeResult ZRange(const std::string& key, int64_t start, int64_t stop);
-  ZCardResult ZCard(const std::string& key);
-  ZScoreResult ZScore(const std::string& key, const std::string& member);
-  ZRemResult ZRem(const std::string& key, const std::string& member);
-  ZEntriesResult ZEntries(const std::string& key);
-  uint64_t KeyVersion(const std::string& key);
+  DatabaseResult<int64_t> PushRight(const std::string &key,
+                                    const std::vector<std::string> &values);
+  DatabaseResult<int64_t> PushLeft(const std::string &key,
+                                   const std::vector<std::string> &values);
+  DatabaseResult<std::vector<std::string>> Range(const std::string &key,
+                                                 int64_t start, int64_t stop);
+  DatabaseResult<int64_t> Length(const std::string &key);
+  DatabaseResult<std::optional<std::string>> PopLeft(const std::string &key);
+  DatabaseResult<std::vector<std::string>> PopLeft(const std::string &key,
+                                                   size_t count);
+  WaitOutcome WaitForListReady(const std::string &key,
+                               std::chrono::steady_clock::duration timeout);
+  DatabaseResult<std::string>
+  XAdd(const std::string &key, std::string id,
+       const std::vector<std::pair<std::string, std::string>> &fields);
+  DatabaseResult<std::vector<StreamRangeEntry>>
+  XRange(const std::string &key, std::string_view start, std::string_view end);
+  DatabaseResult<std::vector<StreamRangeEntry>> XRead(const std::string &key,
+                                                      std::string_view start);
+  DatabaseResult<std::optional<std::string>>
+  LastStreamId(const std::string &key);
+  uint64_t StreamGeneration();
+  WaitOutcome WaitForStreamChange(uint64_t observed_generation,
+                                  std::chrono::steady_clock::duration timeout);
+  DatabaseResult<int64_t> Incr(const std::string &key);
+  DatabaseResult<int64_t> ZAdd(const std::string &key, double score,
+                               const std::string &score_text,
+                               const std::string &member);
+  DatabaseResult<std::optional<int64_t>> ZRank(const std::string &key,
+                                               const std::string &member);
+  DatabaseResult<std::vector<std::string>> ZRange(const std::string &key,
+                                                  int64_t start, int64_t stop);
+  DatabaseResult<int64_t> ZCard(const std::string &key);
+  DatabaseResult<std::optional<std::string>> ZScore(const std::string &key,
+                                                    const std::string &member);
+  DatabaseResult<int64_t> ZRem(const std::string &key,
+                               const std::string &member);
+  DatabaseResult<std::vector<std::pair<std::string, std::string>>>
+  ZEntries(const std::string &key);
+  uint64_t KeyVersion(const std::string &key);
 
- private:
+private:
   struct StringValue {
     std::string value;
   };
@@ -191,6 +118,22 @@ class Database {
   struct StreamId {
     int64_t milliseconds = 0;
     int64_t sequence = 0;
+  };
+
+  enum class XAddIdGenerationPolicy {
+    kNone,
+    kSequence,
+    kMillisecondsAndSequence,
+  };
+
+  struct ParsedXAddStreamId {
+    StreamId id;
+    XAddIdGenerationPolicy generation = XAddIdGenerationPolicy::kNone;
+  };
+
+  enum class StreamRangeBound {
+    kStart,
+    kEnd,
   };
 
   struct StreamValue {
@@ -212,17 +155,16 @@ class Database {
     std::optional<std::chrono::steady_clock::time_point> expires_at;
   };
 
-  Entry* FindLiveEntryLocked(const std::string& key);
-  static bool ParseStreamId(std::string_view value, StreamId& id);
-  static bool ParseXAddStreamId(std::string_view value, StreamId& id,
-                                bool& auto_generate_sequence,
-                                bool& auto_generate_milliseconds);
-  static bool ParseStreamRangeId(std::string_view value, bool is_start,
-                                 StreamId& id);
-  static std::string FormatStreamId(const StreamId& id);
-  static int CompareStreamIds(const StreamId& lhs, const StreamId& rhs);
-  static ValueType EntryValueType(const Entry& entry);
-  static bool IsExpired(const Entry& entry,
+  Entry *FindLiveEntryLocked(const std::string &key);
+  static std::optional<StreamId> ParseStreamId(std::string_view value);
+  static std::optional<ParsedXAddStreamId>
+  ParseXAddStreamId(std::string_view value);
+  static std::optional<StreamId>
+  ParseStreamRangeId(std::string_view value, StreamRangeBound bound);
+  static std::string FormatStreamId(const StreamId &id);
+  static int CompareStreamIds(const StreamId &lhs, const StreamId &rhs);
+  static ValueType EntryValueType(const Entry &entry);
+  static bool IsExpired(const Entry &entry,
                         std::chrono::steady_clock::time_point now);
 
   std::unordered_map<std::string, Entry> store_;
@@ -230,6 +172,7 @@ class Database {
   std::mutex mutex_;
   std::condition_variable list_change_cv_;
   std::condition_variable stream_change_cv_;
+  uint64_t stream_generation_ = 0;
 };
 
-}  // namespace redis
+} // namespace redis

@@ -8,6 +8,7 @@ using redis::CommandExecutor;
 using redis::Database;
 using redis::RespSimpleString;
 using redis::RespWriter;
+using redis::Transaction;
 
 std::string ExchangeCommand(int fd, const std::vector<std::string>& args) {
   std::string encoded = "*" + std::to_string(args.size()) + "\r\n";
@@ -26,21 +27,27 @@ std::string ExchangeCommand(int fd, const std::vector<std::string>& args) {
 TEST(TransactionTest, WatchSingleKeyReturnsOk) {
   Database database;
   CommandExecutor executor(database);
+  Transaction transaction(executor);
 
-  redis::CommandResult result = executor.Execute({"WATCH", "key"});
+  auto processed = transaction.Process({"WATCH", "key"});
 
+  ASSERT_TRUE(processed.has_value());
+  redis::CommandResult& result = *processed;
   ASSERT_TRUE(result.has_value());
-  ASSERT_TRUE(std::holds_alternative<RespSimpleString>(*result));
-  EXPECT_EQ(std::get<RespSimpleString>(*result).value, "OK");
+  ASSERT_TRUE(result->Is<RespSimpleString>());
+  EXPECT_EQ(result->Get<RespSimpleString>().value, "OK");
   EXPECT_EQ(RespWriter::Write(*result), "+OK\r\n");
 }
 
 TEST(TransactionTest, WatchCommandIsCaseInsensitive) {
   Database database;
   CommandExecutor executor(database);
+  Transaction transaction(executor);
 
-  redis::CommandResult result = executor.Execute({"watch", "key"});
+  auto processed = transaction.Process({"watch", "key"});
 
+  ASSERT_TRUE(processed.has_value());
+  redis::CommandResult& result = *processed;
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(RespWriter::Write(*result), "+OK\r\n");
 }
@@ -48,13 +55,18 @@ TEST(TransactionTest, WatchCommandIsCaseInsensitive) {
 TEST(TransactionTest, WatchRequiresAtLeastOneKey) {
   Database database;
   CommandExecutor executor(database);
+  Transaction transaction(executor);
 
-  redis::CommandResult missing_key = executor.Execute({"WATCH"});
+  auto missing_key_processed = transaction.Process({"WATCH"});
+  ASSERT_TRUE(missing_key_processed.has_value());
+  redis::CommandResult& missing_key = *missing_key_processed;
   ASSERT_FALSE(missing_key.has_value());
   EXPECT_EQ(missing_key.error().code, CommandErrorCode::kWrongArity);
 
-  redis::CommandResult multiple_keys =
-      executor.Execute({"WATCH", "key1", "key2"});
+  auto multiple_keys_processed =
+      transaction.Process({"WATCH", "key1", "key2"});
+  ASSERT_TRUE(multiple_keys_processed.has_value());
+  redis::CommandResult& multiple_keys = *multiple_keys_processed;
   ASSERT_TRUE(multiple_keys.has_value());
   EXPECT_EQ(RespWriter::Write(*multiple_keys), "+OK\r\n");
 }
@@ -62,35 +74,95 @@ TEST(TransactionTest, WatchRequiresAtLeastOneKey) {
 TEST(TransactionTest, UnwatchReturnsOkAndRejectsArguments) {
   Database database;
   CommandExecutor executor(database);
+  Transaction transaction(executor);
 
-  redis::CommandResult result = executor.Execute({"UNWATCH"});
+  auto processed = transaction.Process({"UNWATCH"});
+  ASSERT_TRUE(processed.has_value());
+  redis::CommandResult& result = *processed;
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(RespWriter::Write(*result), "+OK\r\n");
 
-  result = executor.Execute({"UNWATCH", "unexpected"});
-  ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().code, CommandErrorCode::kWrongArity);
+  processed = transaction.Process({"UNWATCH", "unexpected"});
+  ASSERT_TRUE(processed.has_value());
+  ASSERT_FALSE(processed->has_value());
+  EXPECT_EQ(processed->error().code, CommandErrorCode::kWrongArity);
 }
 
 TEST(TransactionTest, MultiReturnsOk) {
   Database database;
   CommandExecutor executor(database);
+  Transaction transaction(executor);
 
-  redis::CommandResult result = executor.Execute({"MULTI"});
+  auto processed = transaction.Process({"MULTI"});
 
+  ASSERT_TRUE(processed.has_value());
+  redis::CommandResult& result = *processed;
   ASSERT_TRUE(result.has_value());
-  ASSERT_TRUE(std::holds_alternative<RespSimpleString>(*result));
+  ASSERT_TRUE(result->Is<RespSimpleString>());
   EXPECT_EQ(RespWriter::Write(*result), "+OK\r\n");
 }
 
 TEST(TransactionTest, MultiRejectsArguments) {
   Database database;
   CommandExecutor executor(database);
+  Transaction transaction(executor);
 
-  redis::CommandResult result = executor.Execute({"MULTI", "unexpected"});
+  auto processed = transaction.Process({"MULTI", "unexpected"});
 
+  ASSERT_TRUE(processed.has_value());
+  redis::CommandResult& result = *processed;
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, CommandErrorCode::kWrongArity);
+}
+
+TEST(TransactionTest, MultiCannotBeNested) {
+  Database database;
+  CommandExecutor executor(database);
+  Transaction transaction(executor);
+
+  ASSERT_TRUE(transaction.Process({"MULTI"})->has_value());
+  auto nested = transaction.Process({"MULTI"});
+
+  ASSERT_TRUE(nested.has_value());
+  ASSERT_FALSE(nested->has_value());
+  EXPECT_EQ(nested->error().code, CommandErrorCode::kMultiInsideMulti);
+}
+
+TEST(TransactionTest, BlockingCommandsDoNotBlockExec) {
+  Database database;
+  CommandExecutor executor(database);
+  Transaction transaction(executor);
+
+  ASSERT_TRUE(transaction.Process({"MULTI"})->has_value());
+  ASSERT_TRUE(transaction.Process({"BLPOP", "items", "0"})->has_value());
+
+  auto exec = std::async(std::launch::async,
+                         [&] { return transaction.Process({"EXEC"}); });
+  ASSERT_EQ(exec.wait_for(std::chrono::milliseconds(100)),
+            std::future_status::ready);
+  const auto result = exec.get();
+  ASSERT_TRUE(result.has_value());
+  ASSERT_TRUE(result->has_value());
+  ASSERT_TRUE(result->value().Is<redis::RespArray>());
+  const auto& replies = result->value().Get<redis::RespArray>().values;
+  ASSERT_EQ(replies.size(), 1U);
+  EXPECT_TRUE(replies[0].Is<redis::RespNullArray>());
+}
+
+TEST(TransactionTest, DiscardClearsQueuedCommands) {
+  Database database;
+  CommandExecutor executor(database);
+  Transaction transaction(executor);
+
+  ASSERT_TRUE(transaction.Process({"MULTI"})->has_value());
+  ASSERT_TRUE(transaction.Process({"SET", "key", "value"})->has_value());
+  const auto discard = transaction.Process({"DISCARD"});
+  ASSERT_TRUE(discard.has_value());
+  ASSERT_TRUE(discard->has_value());
+
+  const auto value = executor.Execute({"GET", "key"});
+  ASSERT_TRUE(value.has_value());
+  EXPECT_TRUE(value->Is<redis::RespNullBulk>());
 }
 
 TEST(TransactionTest, WatchInsideMultiReturnsError) {
@@ -100,7 +172,7 @@ TEST(TransactionTest, WatchInsideMultiReturnsError) {
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
 
   ClientSession session(redis::Socket(redis::UniqueFd(fds[0])), executor);
-  std::thread session_thread([&]() { session.Run(); });
+  std::thread session_thread([&]() { (void)session.Run(); });
   char buffer[256];
 
   const std::string watch_before_multi =
@@ -146,8 +218,8 @@ TEST(TransactionTest, ExecAbortsWhenAnyWatchedKeyWasTouched) {
       redis::Socket(redis::UniqueFd(first_fds[0])), executor);
   ClientSession second_session(
       redis::Socket(redis::UniqueFd(second_fds[0])), executor);
-  std::thread first_thread([&]() { first_session.Run(); });
-  std::thread second_thread([&]() { second_session.Run(); });
+  std::thread first_thread([&]() { (void)first_session.Run(); });
+  std::thread second_thread([&]() { (void)second_session.Run(); });
 
   EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "foo", "100"}),
             "+OK\r\n");
@@ -186,8 +258,8 @@ TEST(TransactionTest, UnwatchAllowsTransactionAfterWatchedKeyWasTouched) {
       redis::Socket(redis::UniqueFd(first_fds[0])), executor);
   ClientSession second_session(
       redis::Socket(redis::UniqueFd(second_fds[0])), executor);
-  std::thread first_thread([&]() { first_session.Run(); });
-  std::thread second_thread([&]() { second_session.Run(); });
+  std::thread first_thread([&]() { (void)first_session.Run(); });
+  std::thread second_thread([&]() { (void)second_session.Run(); });
 
   EXPECT_EQ(ExchangeCommand(first_fds[1], {"SET", "baz", "100"}),
             "+OK\r\n");

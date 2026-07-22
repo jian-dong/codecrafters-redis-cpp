@@ -5,6 +5,7 @@
 #include "redis-cpp/database.hpp"
 #include "redis-cpp/pubsub_manager.hpp"
 #include "redis-cpp/replica_manager.hpp"
+#include "redis-cpp/replication_client.hpp"
 #include "redis-cpp/result.hpp"
 #include "redis-cpp/server_config.hpp"
 #include "redis-cpp/socket.hpp"
@@ -19,17 +20,14 @@ class RedisServer {
 
  private:
   void ServeClient(Socket socket);
-  Status ConnectToMaster();
-  void ProcessReplicatedCommands();
 
   ServerConfig config_;
-  AofWriter aof_writer_;
+  AppendOnlyLog append_only_log_;
   Database database_;
   PubSubManager pubsub_manager_;
   ReplicaManager replica_manager_;
   CommandExecutor command_executor_;
-  Socket master_socket_;
-  std::string master_leftover_;
+  ReplicationClient replication_client_;
 };
 
 }  // namespace redis

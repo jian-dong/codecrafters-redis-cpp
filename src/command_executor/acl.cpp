@@ -116,22 +116,13 @@ std::string Sha256Hex(std::string_view input) {
   return output.str();
 }
 
-std::string EncodeAclGetuserResponse(bool nopass,
-                                     const std::vector<std::string>& passwords) {
-  std::string response = "*4\r\n";
-  response += RespWriter::Write(RespBulkString{"flags"});
-  if (nopass) {
-    response += "*1\r\n";
-    response += RespWriter::Write(RespBulkString{"nopass"});
-  } else {
-    response += "*0\r\n";
-  }
-  response += RespWriter::Write(RespBulkString{"passwords"});
-  response += "*" + std::to_string(passwords.size()) + "\r\n";
-  for (const std::string& password : passwords) {
-    response += RespWriter::Write(RespBulkString{password});
-  }
-  return response;
+RespArray AclGetuserResponse(bool nopass,
+                             const std::vector<std::string>& passwords) {
+  RespArray flags =
+      nopass ? RespArray::BulkStrings({"nopass"}) : RespArray{};
+  return RespArray{std::vector<RespValue>{
+      RespBulkString{"flags"}, std::move(flags),
+      RespBulkString{"passwords"}, RespArray::BulkStrings(passwords)}};
 }
 
 }  // namespace
@@ -158,10 +149,10 @@ bool CommandExecutor::DefaultUserAcceptsPassword(
   return false;
 }
 
-RespRaw CommandExecutor::DefaultUserDescription() const {
+RespValue CommandExecutor::DefaultUserDescription() const {
   std::lock_guard<std::mutex> lock(acl_mutex_);
-  return RespRaw{EncodeAclGetuserResponse(default_user_.nopass,
-                                          default_user_.password_hashes)};
+  return AclGetuserResponse(default_user_.nopass,
+                            default_user_.password_hashes);
 }
 
 void CommandExecutor::SetDefaultUserPassword(const std::string& password) {

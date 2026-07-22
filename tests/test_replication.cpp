@@ -1,5 +1,7 @@
 #include "test_support.hpp"
 
+#include "redis-cpp/replication_client.hpp"
+
 namespace {
 
 using redis::CommandExecutor;
@@ -16,12 +18,27 @@ TEST(ReplicationTest, ReplicaReplconfGetackReturnsAck) {
 
   redis::CommandResult result = executor.Execute({"REPLCONF", "GETACK", "*"});
   ASSERT_TRUE((result.has_value())) << "replica REPLCONF GETACK should succeed";
-  ASSERT_TRUE((std::holds_alternative<RespArray>(*result))) << "replica REPLCONF GETACK should return a RESP array";
+  ASSERT_TRUE((result->Is<RespArray>())) << "replica REPLCONF GETACK should return a RESP array";
 
-  const auto& response = std::get<RespArray>(*result);
-  ASSERT_TRUE((response.values == std::vector<std::string>({"REPLCONF", "ACK", "0"}))) << "replica REPLCONF GETACK should return REPLCONF ACK 0";
+  const auto& response = result->Get<RespArray>();
+  ASSERT_TRUE((RespBulkStrings(response) == std::vector<std::string>({"REPLCONF", "ACK", "0"}))) << "replica REPLCONF GETACK should return REPLCONF ACK 0";
   ASSERT_TRUE((RespWriter::Write(*result) ==
              "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n")) << "replica REPLCONF GETACK should encode as the expected RESP array";
+}
+
+TEST(ReplicationTest, ReplicaConnectionRejectsMalformedMasterEndpoint) {
+  Database database;
+  CommandExecutor executor(database, true);
+  redis::ReplicationClient client(executor);
+
+  const redis::Status status = client.Connect("missing-port", 6380);
+
+  ASSERT_FALSE(status.has_value());
+  const auto* error =
+      std::get_if<redis::ReplicationError>(&status.error().Kind());
+  ASSERT_NE(error, nullptr);
+  EXPECT_EQ(error->code,
+            redis::ReplicationErrorCode::kInvalidMasterEndpoint);
 }
 
 TEST(ReplicationTest, MasterReplconfStillReturnsOk) {
@@ -30,8 +47,8 @@ TEST(ReplicationTest, MasterReplconfStillReturnsOk) {
 
   redis::CommandResult result = executor.Execute({"REPLCONF", "GETACK", "*"});
   ASSERT_TRUE((result.has_value())) << "master REPLCONF GETACK should succeed";
-  ASSERT_TRUE((std::holds_alternative<RespSimpleString>(*result))) << "master REPLCONF GETACK should still return +OK";
-  ASSERT_TRUE((std::get<RespSimpleString>(*result).value == "OK")) << "master REPLCONF GETACK should return OK";
+  ASSERT_TRUE((result->Is<RespSimpleString>())) << "master REPLCONF GETACK should still return +OK";
+  ASSERT_TRUE((result->Get<RespSimpleString>().value == "OK")) << "master REPLCONF GETACK should return OK";
 }
 
 TEST(ReplicationTest, WaitReturnsZeroImmediatelyWithoutReplicas) {
@@ -40,8 +57,8 @@ TEST(ReplicationTest, WaitReturnsZeroImmediatelyWithoutReplicas) {
 
   redis::CommandResult result = executor.Execute({"WAIT", "0", "60000"});
   ASSERT_TRUE((result.has_value())) << "WAIT 0 60000 should succeed";
-  ASSERT_TRUE((std::holds_alternative<RespInteger>(*result))) << "WAIT 0 60000 should return a RESP integer";
-  ASSERT_TRUE((std::get<RespInteger>(*result).value == 0)) << "WAIT 0 60000 should return 0";
+  ASSERT_TRUE((result->Is<RespInteger>())) << "WAIT 0 60000 should return a RESP integer";
+  ASSERT_TRUE((result->Get<RespInteger>().value == 0)) << "WAIT 0 60000 should return 0";
   ASSERT_TRUE((RespWriter::Write(*result) == ":0\r\n")) << "WAIT 0 60000 should encode as :0";
 }
 
@@ -55,13 +72,13 @@ TEST(ReplicationTest, WaitReturnsConnectedReplicaCount) {
       socketpair(AF_UNIX, SOCK_STREAM, 0, replica_sockets);
   ASSERT_TRUE((socket_pair_status == 0)) << "socketpair should succeed";
 
-  replica_manager.AddReplica(replica_sockets[0]);
-  replica_manager.AddReplica(replica_sockets[1]);
+  ASSERT_TRUE(replica_manager.AddReplica(replica_sockets[0]).has_value());
+  ASSERT_TRUE(replica_manager.AddReplica(replica_sockets[1]).has_value());
 
   redis::CommandResult result = executor.Execute({"WAIT", "9", "500"});
   ASSERT_TRUE((result.has_value())) << "WAIT 9 500 should succeed";
-  ASSERT_TRUE((std::holds_alternative<RespInteger>(*result))) << "WAIT 9 500 should return a RESP integer";
-  ASSERT_TRUE((std::get<RespInteger>(*result).value == 2)) << "WAIT should return the connected replica count";
+  ASSERT_TRUE((result->Is<RespInteger>())) << "WAIT 9 500 should return a RESP integer";
+  ASSERT_TRUE((result->Get<RespInteger>().value == 2)) << "WAIT should return the connected replica count";
   ASSERT_TRUE((RespWriter::Write(*result) == ":2\r\n")) << "WAIT should encode the connected replica count as a RESP integer";
 
   close(replica_sockets[0]);
@@ -78,7 +95,7 @@ TEST(ReplicationTest, WaitBlocksUntilReplicaAcknowledgesPreviousWrite) {
       socketpair(AF_UNIX, SOCK_STREAM, 0, replica_sockets);
   ASSERT_TRUE((socket_pair_status == 0)) << "socketpair should succeed";
 
-  replica_manager.AddReplica(replica_sockets[0]);
+  ASSERT_TRUE(replica_manager.AddReplica(replica_sockets[0]).has_value());
 
   const std::string write_command =
       "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\n123\r\n";
@@ -104,8 +121,8 @@ TEST(ReplicationTest, WaitBlocksUntilReplicaAcknowledgesPreviousWrite) {
 
   redis::CommandResult result = wait_result.get();
   ASSERT_TRUE((result.has_value())) << "WAIT should succeed after the replica ACKs";
-  ASSERT_TRUE((std::holds_alternative<RespInteger>(*result))) << "WAIT should return a RESP integer after waiting";
-  ASSERT_TRUE((std::get<RespInteger>(*result).value == 1)) << "WAIT should report the replica that acknowledged the write";
+  ASSERT_TRUE((result->Is<RespInteger>())) << "WAIT should return a RESP integer after waiting";
+  ASSERT_TRUE((result->Get<RespInteger>().value == 1)) << "WAIT should report the replica that acknowledged the write";
 
   close(replica_sockets[0]);
   close(replica_sockets[1]);

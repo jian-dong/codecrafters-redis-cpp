@@ -1,12 +1,52 @@
 #include "redis-cpp/socket.hpp"
 
 #include <arpa/inet.h>
+#include <cerrno>
 #include <netdb.h>
 #include <sys/socket.h>
 
 #include <string>
 
 namespace redis {
+namespace {
+
+void DisableSigpipe(int fd) {
+#ifdef SO_NOSIGPIPE
+  const int enabled = 1;
+  (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+#else
+  (void)fd;
+#endif
+}
+
+ssize_t SendWithoutSigpipe(int fd, const void* data, size_t size) {
+#ifdef MSG_NOSIGNAL
+  return send(fd, data, size, MSG_NOSIGNAL);
+#else
+  return send(fd, data, size, 0);
+#endif
+}
+
+Status SendAllToFd(int fd, std::string_view data) {
+  size_t total_sent = 0;
+  while (total_sent < data.size()) {
+    const ssize_t sent = SendWithoutSigpipe(
+        fd, data.data() + total_sent, data.size() - total_sent);
+    if (sent < 0 && errno == EINTR) {
+      continue;
+    }
+    if (sent <= 0) {
+      return tl::make_unexpected(
+          MakeNetworkError(NetworkErrorCode::kSendFailed));
+    }
+    total_sent += static_cast<size_t>(sent);
+  }
+  return {};
+}
+
+}  // namespace
+
+std::atomic<ConnectionId> ConnectionWriter::next_id_{1};
 
 Result<Socket> Socket::Connect(const std::string& host, int port) {
   const std::string port_str = std::to_string(port);
@@ -38,23 +78,57 @@ Result<Socket> Socket::Connect(const std::string& host, int port) {
   return Socket(std::move(fd));
 }
 
-ssize_t Socket::Receive(void* buffer, size_t size) const {
-  return recv(fd_.Get(), buffer, size, 0);
+Result<std::optional<size_t>> Socket::Receive(void* buffer, size_t size) const {
+  while (true) {
+    const ssize_t received = recv(fd_.Get(), buffer, size, 0);
+    if (received > 0) {
+      return std::optional<size_t>(static_cast<size_t>(received));
+    }
+    if (received == 0) {
+      return std::optional<size_t>();
+    }
+    if (errno != EINTR) {
+      return tl::make_unexpected(
+          MakeNetworkError(NetworkErrorCode::kReceiveFailed));
+    }
+  }
 }
 
 Status Socket::SendAll(std::string_view data) const {
-  size_t total_sent = 0;
-  while (total_sent < data.size()) {
-    const ssize_t sent =
-        send(fd_.Get(), data.data() + total_sent, data.size() - total_sent, 0);
-    if (sent <= 0) {
-      return tl::make_unexpected(
-          MakeNetworkError(NetworkErrorCode::kSendFailed));
-    }
-    total_sent += static_cast<size_t>(sent);
-  }
+  DisableSigpipe(fd_.Get());
+  return SendAllToFd(fd_.Get(), data);
+}
 
-  return {};
+ConnectionWriter::ConnectionWriter(int fd)
+    : id_(next_id_.fetch_add(1, std::memory_order_relaxed)),
+      fd_(fd),
+      open_(fd >= 0) {
+  if (open_) {
+    DisableSigpipe(fd_);
+  }
+}
+
+bool ConnectionWriter::IsOpen() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return open_;
+}
+
+Status ConnectionWriter::SendAll(std::string_view data) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!open_) {
+    return tl::make_unexpected(
+        MakeNetworkError(NetworkErrorCode::kConnectionClosed));
+  }
+  Status result = SendAllToFd(fd_, data);
+  if (!result) {
+    open_ = false;
+  }
+  return result;
+}
+
+void ConnectionWriter::Close() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  open_ = false;
 }
 
 Result<TcpListener> TcpListener::Open(const ServerConfig& config) {

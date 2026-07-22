@@ -1,11 +1,16 @@
 #include "redis-cpp/command_executor.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "redis-cpp/command.hpp"
+#include "redis-cpp/numeric_parser.hpp"
+#include "redis-cpp/pubsub_manager.hpp"
 #include "redis-cpp/resp.hpp"
 
 namespace redis {
@@ -13,12 +18,6 @@ namespace {
 
 constexpr std::string_view kMasterReplId =
     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
-
-bool IsMutatingCommand(const std::string& command) {
-  return command == "SET" || command == "RPUSH" || command == "LPUSH" ||
-         command == "LPOP" || command == "XADD" || command == "INCR" ||
-         command == "GEOADD" || command == "ZADD" || command == "ZREM";
-}
 
 const std::string& GetEmptyRdb() {
   static const std::string rdb = []() {
@@ -37,17 +36,35 @@ const std::string& GetEmptyRdb() {
   return rdb;
 }
 
+int64_t UnixTimeMilliseconds() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+std::string EncodeTransaction(
+    const std::vector<std::vector<std::string>>& commands) {
+  std::string encoded = RespWriter::WriteCommand({"MULTI"});
+  for (const std::vector<std::string>& command : commands) {
+    encoded += RespWriter::WriteCommand(command);
+  }
+  encoded += RespWriter::WriteCommand({"EXEC"});
+  return encoded;
+}
+
 }  // namespace
 
 CommandExecutor::CommandExecutor(Database& database, bool is_replica,
                                  ReplicaManager* replica_manager,
                                  const ServerConfig* server_config,
-                                 AofWriter* aof_writer)
+                                 AppendOnlyLog* append_only_log,
+                                 PubSubManager* pubsub_manager)
     : database_(database),
       is_replica_(is_replica),
       replica_manager_(replica_manager),
       server_config_(server_config),
-      aof_writer_(aof_writer) {}
+      append_only_log_(append_only_log),
+      pubsub_manager_(pubsub_manager) {}
 
 std::string CommandErrorMessage(const CommandError& error) {
   switch (error.code) {
@@ -78,6 +95,8 @@ std::string CommandErrorMessage(const CommandError& error) {
       return "ERR DISCARD without MULTI";
     case CommandErrorCode::kWatchInsideMulti:
       return "ERR WATCH inside MULTI is not allowed";
+    case CommandErrorCode::kMultiInsideMulti:
+      return "ERR MULTI calls can not be nested";
     case CommandErrorCode::kPersistenceFailed:
       return "MISCONF " + error.detail;
   }
@@ -85,146 +104,170 @@ std::string CommandErrorMessage(const CommandError& error) {
   return "ERR command failed";
 }
 
-CommandResult CommandExecutor::Execute(const std::vector<std::string>& args) {
+CommandError CommandExecutor::MapDatabaseError(const DatabaseError& error,
+                                               std::string command) {
+  CommandErrorCode command_code = CommandErrorCode::kSyntaxError;
+  switch (error.code) {
+    case DatabaseErrorCode::kWrongType:
+      command_code = CommandErrorCode::kWrongType;
+      break;
+    case DatabaseErrorCode::kInvalidInteger:
+    case DatabaseErrorCode::kIntegerOverflow:
+      command_code = CommandErrorCode::kInvalidInteger;
+      break;
+    case DatabaseErrorCode::kInvalidStreamId:
+      command_code = CommandErrorCode::kSyntaxError;
+      break;
+    case DatabaseErrorCode::kStreamIdNotGreaterThanZeroZero:
+      command_code = CommandErrorCode::kXaddIdNotGreaterThanZeroZero;
+      break;
+    case DatabaseErrorCode::kStreamIdNotGreaterThanTopItem:
+      command_code = CommandErrorCode::kXaddIdNotGreaterThanTopItem;
+      break;
+  }
+  return CommandError{.code = command_code, .command = std::move(command)};
+}
+
+CommandResult CommandExecutor::Execute(const std::vector<std::string>& args,
+                                       CommandOrigin origin) {
   if (args.empty()) {
     return RespSimpleString{"PONG"};
   }
 
-  const std::string command = ToUpperAscii(args[0]);
+  const CommandSemantics semantics = DescribeCommand(args[0]);
+  if (semantics.id == CommandId::kBlpop &&
+      origin != CommandOrigin::kAppendOnlyReplay &&
+      origin != CommandOrigin::kTransaction) {
+    return ExecuteBlockingPop(args, origin);
+  }
   std::unique_lock<std::recursive_mutex> transaction_lock(transaction_mutex_,
                                                            std::defer_lock);
-  if (IsMutatingCommand(command)) {
+  const bool blocking_xread =
+      semantics.id == CommandId::kXread && args.size() >= 2 &&
+      ToUpperAscii(args[1]) == "BLOCK";
+  if (semantics.serialized_with_transactions && !blocking_xread) {
     transaction_lock.lock();
   }
-  if (command == "PING") {
-    return HandlePing(args);
-  }
-  if (command == "ECHO") {
-    return HandleEcho(args);
-  }
-  if (command == "SET") {
-    return HandleSet(args);
-  }
-  if (command == "GET") {
-    return HandleGet(args);
-  }
-  if (command == "WATCH") {
-    return HandleWatch(args);
-  }
-  if (command == "UNWATCH") {
-    return HandleUnwatch(args);
-  }
-  if (command == "MULTI") {
-    return HandleMulti(args);
-  }
-  if (command == "KEYS") {
-    return HandleKeys(args);
-  }
-  if (command == "AUTH") {
-    return HandleAuth(args);
-  }
-  if (command == "ACL") {
-    return HandleAcl(args);
-  }
-  if (command == "SUBSCRIBE") {
-    return HandleSubscribe(args);
-  }
-  if (command == "TYPE") {
-    return HandleType(args);
-  }
-  if (command == "GEOADD") {
-    return HandleGeoadd(args);
-  }
-  if (command == "GEOPOS") {
-    return HandleGeopos(args);
-  }
-  if (command == "GEODIST") {
-    return HandleGeodist(args);
-  }
-  if (command == "GEOSEARCH") {
-    return HandleGeosearch(args);
-  }
-  if (command == "ZADD") {
-    return HandleZadd(args);
-  }
-  if (command == "ZRANK") {
-    return HandleZrank(args);
-  }
-  if (command == "ZRANGE") {
-    return HandleZrange(args);
-  }
-  if (command == "ZCARD") {
-    return HandleZcard(args);
-  }
-  if (command == "ZSCORE") {
-    return HandleZscore(args);
-  }
-  if (command == "ZREM") {
-    return HandleZrem(args);
-  }
-  if (command == "XADD") {
-    return HandleXadd(args);
-  }
-  if (command == "XRANGE") {
-    return HandleXrange(args);
-  }
-  if (command == "XREAD") {
-    return HandleXread(args);
-  }
-  if (command == "RPUSH") {
-    return HandleRpush(args);
-  }
-  if (command == "LPUSH") {
-    return HandleLpush(args);
-  }
-  if (command == "LRANGE") {
-    return HandleLrange(args);
-  }
-  if (command == "LLEN") {
-    return HandleLlen(args);
-  }
-  if (command == "LPOP") {
-    return HandleLpop(args);
-  }
-  if (command == "BLPOP") {
-    return HandleBlpop(args);
-  }
-  if (command == "INCR") {
-    return HandleIncr(args);
-  }
-  if (command == "CONFIG") {
-    return HandleConfig(args);
-  }
-  if (command == "INFO") {
-    return HandleInfo(args);
-  }
-  if (command == "REPLCONF") {
-    return HandleReplconf(args);
-  }
-  if (command == "WAIT") {
-    return HandleWait(args);
-  }
-  if (command == "PSYNC") {
-    const std::string& rdb = GetEmptyRdb();
-    std::string response =
-        "+FULLRESYNC " + std::string(kMasterReplId) + " 0\r\n";
-    response += "$" + std::to_string(rdb.size()) + "\r\n";
-    response += rdb;
-    return RespRaw{std::move(response)};
-  }
-  if (command == "EXEC") {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kExecWithoutMulti,
-                     .command = "exec"});
-  }
-  if (command == "DISCARD") {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kDiscardWithoutMulti,
-                     .command = "discard"});
+  CommandResult result = [&]() -> CommandResult {
+    switch (semantics.id) {
+      case CommandId::kPing:
+        return HandlePing(args);
+      case CommandId::kEcho:
+        return HandleEcho(args);
+      case CommandId::kSet:
+        return HandleSet(args);
+      case CommandId::kGet:
+        return HandleGet(args);
+      case CommandId::kKeys:
+        return HandleKeys(args);
+      case CommandId::kAuth:
+        return HandleAuth(args);
+      case CommandId::kAcl:
+        return HandleAcl(args);
+      case CommandId::kPublish:
+        return HandlePublish(args);
+      case CommandId::kSubscribe:
+        return HandleSubscribe(args);
+      case CommandId::kType:
+        return HandleType(args);
+      case CommandId::kGeoadd:
+        return HandleGeoadd(args);
+      case CommandId::kGeopos:
+        return HandleGeopos(args);
+      case CommandId::kGeodist:
+        return HandleGeodist(args);
+      case CommandId::kGeosearch:
+        return HandleGeosearch(args);
+      case CommandId::kZadd:
+        return HandleZadd(args);
+      case CommandId::kZrank:
+        return HandleZrank(args);
+      case CommandId::kZrange:
+        return HandleZrange(args);
+      case CommandId::kZcard:
+        return HandleZcard(args);
+      case CommandId::kZscore:
+        return HandleZscore(args);
+      case CommandId::kZrem:
+        return HandleZrem(args);
+      case CommandId::kXadd:
+        return HandleXadd(args);
+      case CommandId::kXrange:
+        return HandleXrange(args);
+      case CommandId::kXread:
+        return HandleXread(args);
+      case CommandId::kRpush:
+        return HandleRpush(args);
+      case CommandId::kLpush:
+        return HandleLpush(args);
+      case CommandId::kLrange:
+        return HandleLrange(args);
+      case CommandId::kLlen:
+        return HandleLlen(args);
+      case CommandId::kLpop:
+        return HandleLpop(args);
+      case CommandId::kBlpop:
+        return HandleBlpopWithoutBlocking(args);
+      case CommandId::kIncr:
+        return HandleIncr(args);
+      case CommandId::kConfig:
+        return HandleConfig(args);
+      case CommandId::kInfo:
+        return HandleInfo(args);
+      case CommandId::kReplconf:
+        return HandleReplconf(args);
+      case CommandId::kWait:
+        return HandleWait(args);
+      case CommandId::kPsync: {
+        const std::string& rdb = GetEmptyRdb();
+        return RespSequence{
+            RespSimpleString{"FULLRESYNC " + std::string(kMasterReplId) +
+                             " 0"},
+            RespFileTransfer{rdb}};
+      }
+      case CommandId::kExec:
+        return tl::make_unexpected(
+            CommandError{.code = CommandErrorCode::kExecWithoutMulti,
+                         .command = "exec"});
+      case CommandId::kDiscard:
+        return tl::make_unexpected(
+            CommandError{.code = CommandErrorCode::kDiscardWithoutMulti,
+                         .command = "discard"});
+      default:
+        return tl::make_unexpected(CommandError{
+            .code = CommandErrorCode::kUnknownCommand, .command = args[0]});
+    }
+  }();
+
+  return FinishCommand(args, semantics, std::move(result), origin);
+}
+
+CommandResult CommandExecutor::FinishCommand(
+    const std::vector<std::string>& command,
+    const CommandSemantics& semantics, CommandResult result,
+    CommandOrigin origin) {
+  if (!result || origin == CommandOrigin::kAppendOnlyReplay ||
+      origin == CommandOrigin::kTransaction) {
+    return result;
   }
 
-  return tl::make_unexpected(CommandError{
-      .code = CommandErrorCode::kUnknownCommand, .command = args[0]});
+  CommandEffects effects = DescribeCommandEffects(
+      semantics, command, *result, UnixTimeMilliseconds());
+
+  if (append_only_log_ != nullptr && effects.persistence.has_value()) {
+    Status append_status = append_only_log_->Append(*effects.persistence);
+    if (!append_status) {
+      return tl::make_unexpected(CommandError{
+          .code = CommandErrorCode::kPersistenceFailed,
+          .command = command[0],
+          .detail = append_status.error().Message()});
+    }
+  }
+  if (replica_manager_ != nullptr && effects.replication.has_value()) {
+    replica_manager_->PropagateToAll(
+        RespWriter::WriteCommand(*effects.replication));
+  }
+  return result;
 }
 
 std::unordered_map<std::string, uint64_t> CommandExecutor::GetKeyVersions(
@@ -240,7 +283,8 @@ std::unordered_map<std::string, uint64_t> CommandExecutor::GetKeyVersions(
 
 TransactionExecution CommandExecutor::ExecuteTransaction(
     const std::vector<std::vector<std::string>>& commands,
-    const std::unordered_map<std::string, uint64_t>& watched_key_versions) {
+    const std::unordered_map<std::string, uint64_t>& watched_key_versions,
+    CommandOrigin origin) {
   std::lock_guard<std::recursive_mutex> lock(transaction_mutex_);
   for (const auto& [key, watched_version] : watched_key_versions) {
     if (database_.KeyVersion(key) != watched_version) {
@@ -250,10 +294,67 @@ TransactionExecution CommandExecutor::ExecuteTransaction(
 
   TransactionExecution execution;
   execution.results.reserve(commands.size());
+  std::vector<std::vector<std::string>> persistence_commands;
+  std::vector<std::vector<std::string>> replication_commands;
   for (const std::vector<std::string>& command : commands) {
-    execution.results.push_back(Execute(command));
+    CommandResult result = ExecuteTransactionCommand(command, origin);
+    if (result) {
+      const CommandEffects effects = DescribeCommandEffects(
+          DescribeCommand(command.empty() ? "" : command[0]), command,
+          *result, UnixTimeMilliseconds());
+      if (effects.persistence.has_value()) {
+        persistence_commands.push_back(*effects.persistence);
+      }
+      if (effects.replication.has_value()) {
+        replication_commands.push_back(*effects.replication);
+      }
+    }
+    execution.results.push_back(std::move(result));
+  }
+
+  if (origin == CommandOrigin::kAppendOnlyReplay) {
+    return execution;
+  }
+  if (append_only_log_ != nullptr && !persistence_commands.empty()) {
+    Status append_status =
+        append_only_log_->AppendTransaction(persistence_commands);
+    if (!append_status) {
+      execution.error = CommandError{
+          .code = CommandErrorCode::kPersistenceFailed,
+          .command = "exec",
+          .detail = append_status.error().Message(),
+      };
+      return execution;
+    }
+  }
+  if (replica_manager_ != nullptr && !replication_commands.empty()) {
+    replica_manager_->PropagateToAll(
+        EncodeTransaction(replication_commands));
   }
   return execution;
+}
+
+CommandResult CommandExecutor::ExecuteTransactionCommand(
+    const std::vector<std::string>& command, CommandOrigin origin) {
+  const CommandId id =
+      DescribeCommand(command.empty() ? "" : command[0]).id;
+  if (id == CommandId::kBlpop) {
+    return HandleBlpopWithoutBlocking(command);
+  }
+
+  if (id == CommandId::kXread && command.size() >= 3 &&
+      ToUpperAscii(command[1]) == "BLOCK") {
+    std::vector<std::string> non_blocking = command;
+    non_blocking.erase(non_blocking.begin() + 1, non_blocking.begin() + 3);
+    return Execute(non_blocking,
+                   origin == CommandOrigin::kAppendOnlyReplay
+                       ? CommandOrigin::kAppendOnlyReplay
+                       : CommandOrigin::kTransaction);
+  }
+
+  return Execute(command, origin == CommandOrigin::kAppendOnlyReplay
+                              ? CommandOrigin::kAppendOnlyReplay
+                              : CommandOrigin::kTransaction);
 }
 
 CommandResult CommandExecutor::HandlePing(const std::vector<std::string>& args) {
@@ -273,6 +374,20 @@ CommandResult CommandExecutor::HandleEcho(const std::vector<std::string>& args) 
   return RespBulkString{args[1]};
 }
 
+CommandResult CommandExecutor::HandlePublish(
+    const std::vector<std::string>& args) {
+  if (args.size() != 3) {
+    return tl::make_unexpected(CommandError{
+        .code = CommandErrorCode::kWrongArity, .command = "publish"});
+  }
+
+  const int64_t subscriber_count =
+      pubsub_manager_ == nullptr
+          ? 0
+          : pubsub_manager_->Publish(args[1], args[2]);
+  return RespInteger{subscriber_count};
+}
+
 CommandResult CommandExecutor::HandleSet(const std::vector<std::string>& args) {
   if (args.size() < 3) {
     return tl::make_unexpected(
@@ -281,33 +396,35 @@ CommandResult CommandExecutor::HandleSet(const std::vector<std::string>& args) {
 
   std::optional<std::chrono::milliseconds> ttl;
   if (args.size() == 5) {
-    if (ToUpperAscii(args[3]) != "PX") {
+    const std::string expiry_mode = ToUpperAscii(args[3]);
+    if (expiry_mode != "PX" && expiry_mode != "PXAT") {
       return tl::make_unexpected(CommandError{
           .code = CommandErrorCode::kSyntaxError, .command = "set"});
     }
 
-    int64_t ttl_milliseconds = 0;
-    if (!ParseMilliseconds(args[4], ttl_milliseconds)) {
+    const std::optional<int64_t> ttl_milliseconds =
+        ParseNonNegativeInteger(args[4]);
+    if (!ttl_milliseconds.has_value()) {
       return tl::make_unexpected(CommandError{
           .code = CommandErrorCode::kInvalidInteger, .command = "set"});
     }
 
-    ttl = std::chrono::milliseconds(ttl_milliseconds);
+    if (expiry_mode == "PX") {
+      ttl = std::chrono::milliseconds(*ttl_milliseconds);
+    } else {
+      const int64_t now_milliseconds =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch())
+              .count();
+      ttl = std::chrono::milliseconds(
+          std::max<int64_t>(0, *ttl_milliseconds - now_milliseconds));
+    }
   } else if (args.size() != 3) {
     return tl::make_unexpected(
         CommandError{.code = CommandErrorCode::kSyntaxError, .command = "set"});
   }
 
   database_.SetString(args[1], args[2], ttl);
-  if (aof_writer_ != nullptr) {
-    Status append_status = aof_writer_->Append(args);
-    if (!append_status) {
-      return tl::make_unexpected(CommandError{
-          .code = CommandErrorCode::kPersistenceFailed,
-          .command = "set",
-          .detail = append_status.error().Message()});
-    }
-  }
   return RespSimpleString{"OK"};
 }
 
@@ -317,46 +434,16 @@ CommandResult CommandExecutor::HandleGet(const std::vector<std::string>& args) {
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "get"});
   }
 
-  const Database::StringLookup result = database_.GetString(args[1]);
-  if (result.type == ValueType::kNone) {
+  const DatabaseResult<std::optional<std::string>> result =
+      database_.GetString(args[1]);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "get"));
+  }
+  if (!result->has_value()) {
     return RespNullBulk{};
   }
-  if (result.type != ValueType::kString) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "get"});
-  }
 
-  return RespBulkString{*result.value};
-}
-
-CommandResult CommandExecutor::HandleWatch(
-    const std::vector<std::string>& args) {
-  if (args.size() < 2) {
-    return tl::make_unexpected(CommandError{
-        .code = CommandErrorCode::kWrongArity, .command = "watch"});
-  }
-
-  return RespSimpleString{"OK"};
-}
-
-CommandResult CommandExecutor::HandleUnwatch(
-    const std::vector<std::string>& args) {
-  if (args.size() != 1) {
-    return tl::make_unexpected(CommandError{
-        .code = CommandErrorCode::kWrongArity, .command = "unwatch"});
-  }
-
-  return RespSimpleString{"OK"};
-}
-
-CommandResult CommandExecutor::HandleMulti(
-    const std::vector<std::string>& args) {
-  if (args.size() != 1) {
-    return tl::make_unexpected(CommandError{
-        .code = CommandErrorCode::kWrongArity, .command = "multi"});
-  }
-
-  return RespSimpleString{"OK"};
+  return RespBulkString{**result};
 }
 
 CommandResult CommandExecutor::HandleKeys(const std::vector<std::string>& args) {
@@ -366,10 +453,10 @@ CommandResult CommandExecutor::HandleKeys(const std::vector<std::string>& args) 
   }
 
   if (args[1] != "*") {
-    return RespArray{{}};
+    return RespArray{};
   }
 
-  return RespArray{database_.Keys()};
+  return RespArray::BulkStrings(database_.Keys());
 }
 
 CommandResult CommandExecutor::HandleSubscribe(
@@ -379,11 +466,9 @@ CommandResult CommandExecutor::HandleSubscribe(
         .code = CommandErrorCode::kWrongArity, .command = "subscribe"});
   }
 
-  std::string response = "*3\r\n";
-  response += "$9\r\nsubscribe\r\n";
-  response += "$" + std::to_string(args[1].size()) + "\r\n" + args[1] + "\r\n";
-  response += ":1\r\n";
-  return RespRaw{std::move(response)};
+  return RespArray{std::vector<RespValue>{RespBulkString{"subscribe"},
+                                          RespBulkString{args[1]},
+                                          RespInteger{1}}};
 }
 
 CommandResult CommandExecutor::HandleType(const std::vector<std::string>& args) {
@@ -392,7 +477,8 @@ CommandResult CommandExecutor::HandleType(const std::vector<std::string>& args) 
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "type"});
   }
 
-  return RespSimpleString{ValueTypeName(database_.TypeOf(args[1]))};
+  const std::optional<ValueType> type = database_.TypeOf(args[1]);
+  return RespSimpleString{type.has_value() ? ValueTypeName(*type) : "none"};
 }
 
 CommandResult CommandExecutor::HandleIncr(const std::vector<std::string>& args) {
@@ -401,17 +487,12 @@ CommandResult CommandExecutor::HandleIncr(const std::vector<std::string>& args) 
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "incr"});
   }
 
-  const Database::IncrResult result = database_.Incr(args[1]);
-  if (result.wrong_type) {
-    return tl::make_unexpected(
-        CommandError{.code = CommandErrorCode::kWrongType, .command = "incr"});
-  }
-  if (result.not_integer) {
-    return tl::make_unexpected(CommandError{
-        .code = CommandErrorCode::kInvalidInteger, .command = "incr"});
+  const DatabaseResult<int64_t> result = database_.Incr(args[1]);
+  if (!result) {
+    return tl::make_unexpected(MapDatabaseError(result.error(), "incr"));
   }
 
-  return RespInteger{result.value};
+  return RespInteger{*result};
 }
 
 CommandResult CommandExecutor::HandleInfo(const std::vector<std::string>& args) {
@@ -439,35 +520,37 @@ CommandResult CommandExecutor::HandleConfig(
 
   const std::string parameter = ToUpperAscii(args[2]);
   if (server_config_ == nullptr) {
-    return RespArray{{}};
+    return RespArray{};
   }
   if (parameter == "DIR") {
-    return RespArray{{"dir", server_config_->dir}};
+    return RespArray::BulkStrings({"dir", server_config_->dir});
   }
   if (parameter == "DBFILENAME") {
-    return RespArray{{"dbfilename", server_config_->dbfilename}};
+    return RespArray::BulkStrings({"dbfilename", server_config_->dbfilename});
   }
   if (parameter == "APPENDONLY") {
-    return RespArray{{"appendonly", server_config_->appendonly}};
+    return RespArray::BulkStrings({"appendonly", server_config_->appendonly});
   }
   if (parameter == "APPENDDIRNAME") {
-    return RespArray{{"appenddirname", server_config_->appenddirname}};
+    return RespArray::BulkStrings(
+        {"appenddirname", server_config_->appenddirname});
   }
   if (parameter == "APPENDFILENAME") {
-    return RespArray{{"appendfilename", server_config_->appendfilename}};
+    return RespArray::BulkStrings(
+        {"appendfilename", server_config_->appendfilename});
   }
   if (parameter == "APPENDFSYNC") {
-    return RespArray{{"appendfsync", server_config_->appendfsync}};
+    return RespArray::BulkStrings({"appendfsync", server_config_->appendfsync});
   }
 
-  return RespArray{{}};
+  return RespArray{};
 }
 
 CommandResult CommandExecutor::HandleReplconf(
     const std::vector<std::string>& args) {
   if (is_replica_ && args.size() == 3 &&
       ToUpperAscii(args[1]) == "GETACK" && args[2] == "*") {
-    return RespArray{{"REPLCONF", "ACK", "0"}};
+    return RespArray::BulkStrings({"REPLCONF", "ACK", "0"});
   }
 
   return RespSimpleString{"OK"};
@@ -479,10 +562,11 @@ CommandResult CommandExecutor::HandleWait(const std::vector<std::string>& args) 
         CommandError{.code = CommandErrorCode::kWrongArity, .command = "wait"});
   }
 
-  int64_t num_replicas = 0;
-  int64_t timeout_milliseconds = 0;
-  if (!ParseMilliseconds(args[1], num_replicas) ||
-      !ParseMilliseconds(args[2], timeout_milliseconds)) {
+  const std::optional<int64_t> num_replicas =
+      ParseNonNegativeInteger(args[1]);
+  const std::optional<int64_t> timeout_milliseconds =
+      ParseNonNegativeInteger(args[2]);
+  if (!num_replicas.has_value() || !timeout_milliseconds.has_value()) {
     return tl::make_unexpected(
         CommandError{.code = CommandErrorCode::kInvalidInteger,
                      .command = "wait"});
@@ -493,8 +577,8 @@ CommandResult CommandExecutor::HandleWait(const std::vector<std::string>& args) 
   }
 
   return RespInteger{replica_manager_->WaitForReplicas(
-      static_cast<size_t>(num_replicas),
-      std::chrono::milliseconds(timeout_milliseconds))};
+      static_cast<size_t>(*num_replicas),
+      std::chrono::milliseconds(*timeout_milliseconds))};
 }
 
 }  // namespace redis

@@ -55,6 +55,15 @@ TEST(ConfigTest, CommandLineFlagsOverrideAofDefaults) {
   EXPECT_EQ(result->appendfsync, "always");
 }
 
+TEST(ConfigTest, RejectsPersistencePathsThatEscapeTheConfiguredDirectory) {
+  char program_name[] = "redis";
+  char appenddirname_flag[] = "--appenddirname";
+  char appenddirname_value[] = "../escape";
+  char* argv[] = {program_name, appenddirname_flag, appenddirname_value};
+
+  EXPECT_FALSE(redis::ConfigParser{}.Parse(3, argv).has_value());
+}
+
 TEST(ConfigTest, ConfigGetReturnsAofDefaults) {
   Database database;
   ServerConfig config;
@@ -71,8 +80,8 @@ TEST(ConfigTest, ConfigGetReturnsAofDefaults) {
     redis::CommandResult result =
         executor.Execute({"CONFIG", "GET", option});
     ASSERT_TRUE(result.has_value()) << option;
-    ASSERT_TRUE(std::holds_alternative<RespArray>(*result)) << option;
-    EXPECT_EQ(std::get<RespArray>(*result).values,
+    ASSERT_TRUE((*result).Is<RespArray>()) << option;
+    EXPECT_EQ(RespBulkStrings((*result).Get<RespArray>()),
               (std::vector<std::string>{option, value}))
         << option;
     EXPECT_EQ(RespWriter::Write(*result),
@@ -91,10 +100,10 @@ TEST(ConfigTest, ConfigGetDirReturnsConfiguredDirectory) {
 
   redis::CommandResult result = executor.Execute({"CONFIG", "GET", "dir"});
   ASSERT_TRUE((result.has_value())) << "CONFIG GET dir should succeed";
-  ASSERT_TRUE((std::holds_alternative<RespArray>(*result))) << "CONFIG GET dir should return a RESP array";
+  ASSERT_TRUE(((*result).Is<RespArray>())) << "CONFIG GET dir should return a RESP array";
 
-  const auto& response = std::get<RespArray>(*result);
-  ASSERT_TRUE((response.values == std::vector<std::string>({"dir", "/tmp/redis-files"}))) << "CONFIG GET dir should return the configured dir";
+  const auto& response = (*result).Get<RespArray>();
+  ASSERT_TRUE((RespBulkStrings(response) == std::vector<std::string>({"dir", "/tmp/redis-files"}))) << "CONFIG GET dir should return the configured dir";
   ASSERT_TRUE((RespWriter::Write(*result) ==
              "*2\r\n$3\r\ndir\r\n$16\r\n/tmp/redis-files\r\n")) << "CONFIG GET dir should encode as the expected RESP array";
 }
@@ -108,10 +117,10 @@ TEST(ConfigTest, ConfigGetDbfilenameReturnsConfiguredFilename) {
   redis::CommandResult result =
       executor.Execute({"CONFIG", "GET", "dbfilename"});
   ASSERT_TRUE((result.has_value())) << "CONFIG GET dbfilename should succeed";
-  ASSERT_TRUE((std::holds_alternative<RespArray>(*result))) << "CONFIG GET dbfilename should return a RESP array";
+  ASSERT_TRUE(((*result).Is<RespArray>())) << "CONFIG GET dbfilename should return a RESP array";
 
-  const auto& response = std::get<RespArray>(*result);
-  ASSERT_TRUE((response.values ==
+  const auto& response = (*result).Get<RespArray>();
+  ASSERT_TRUE((RespBulkStrings(response) ==
              std::vector<std::string>({"dbfilename", "dump.rdb"}))) << "CONFIG GET dbfilename should return the configured filename";
   ASSERT_TRUE((RespWriter::Write(*result) ==
              "*2\r\n$10\r\ndbfilename\r\n$8\r\ndump.rdb\r\n")) << "CONFIG GET dbfilename should encode as the expected RESP array";
@@ -124,10 +133,10 @@ TEST(ConfigTest, KeysReturnsStoredKeys) {
 
   redis::CommandResult result = executor.Execute({"KEYS", "*"});
   ASSERT_TRUE((result.has_value())) << "KEYS * should succeed";
-  ASSERT_TRUE((std::holds_alternative<RespArray>(*result))) << "KEYS * should return a RESP array";
+  ASSERT_TRUE(((*result).Is<RespArray>())) << "KEYS * should return a RESP array";
 
-  const auto& response = std::get<RespArray>(*result);
-  ASSERT_TRUE((response.values == std::vector<std::string>({"foo"}))) << "KEYS * should return the stored key";
+  const auto& response = (*result).Get<RespArray>();
+  ASSERT_TRUE((RespBulkStrings(response) == std::vector<std::string>({"foo"}))) << "KEYS * should return the stored key";
   ASSERT_TRUE((RespWriter::Write(*result) == "*1\r\n$3\r\nfoo\r\n")) << "KEYS * should encode the key as a RESP array";
 }
 

@@ -6,6 +6,15 @@
 #include "redis-cpp/CLI11.hpp"
 
 namespace redis {
+namespace {
+
+bool IsSafePathComponent(const std::string& value) {
+  const std::filesystem::path path(value);
+  return !value.empty() && value != "." && value != ".." &&
+         path.is_relative() && path.filename() == path;
+}
+
+}  // namespace
 
 Result<ServerConfig> ConfigParser::Parse(int argc, char** argv) const {
   ServerConfig config;
@@ -41,6 +50,13 @@ Result<ServerConfig> ConfigParser::Parse(int argc, char** argv) const {
   } catch (const CLI::ParseError& error) {
     return tl::make_unexpected(
         MakeCliError(CliErrorCode::kParseFailed, app.exit(error)));
+  }
+
+  if ((!config.dbfilename.empty() &&
+       !IsSafePathComponent(config.dbfilename)) ||
+      !IsSafePathComponent(config.appenddirname) ||
+      !IsSafePathComponent(config.appendfilename)) {
+    return tl::make_unexpected(MakeCliError(CliErrorCode::kParseFailed, 1));
   }
 
   return config;
